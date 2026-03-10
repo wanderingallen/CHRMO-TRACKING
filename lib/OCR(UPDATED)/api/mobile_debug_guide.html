@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mobile-Web Connection Debug Guide</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background: #f5f5f5;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        .test-section {
+            margin: 20px 0;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+        }
+
+        .success {
+            background: #d4edda;
+            border-color: #c3e6cb;
+            color: #155724;
+        }
+
+        .error {
+            background: #f8d7da;
+            border-color: #f5c6cb;
+            color: #721c24;
+        }
+
+        .info {
+            background: #d1ecf1;
+            border-color: #bee5eb;
+            color: #0c5460;
+        }
+
+        .warning {
+            background: #fff3cd;
+            border-color: #ffeaa7;
+            color: #856404;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+
+        .btn:hover {
+            background: #0056b3;
+        }
+
+        .code {
+            background: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            font-family: monospace;
+            margin: 10px 0;
+        }
+
+        .step {
+            margin: 15px 0;
+            padding: 15px;
+            background: #f8f9fa;
+            border-left: 4px solid #007bff;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🔧 Mobile-Web Connection Debug Guide</h1>
+        <p><strong>Your IP Address:</strong> &lt;PC_IP&gt;</p>
+
+        <!-- Step 1: Test Server Connection -->
+        <div class="test-section">
+            <h2>Step 1: Test Server Connection</h2>
+            <button class="btn" onclick="testConnection()">Test Connection</button>
+            <div id="connectionResult"></div>
+        </div>
+
+        <!-- Step 2: XAMPP Configuration -->
+        <div class="test-section warning">
+            <h2>Step 2: XAMPP Configuration Check</h2>
+            <p><strong>Important:</strong> Make sure XAMPP is configured to accept connections from other devices.</p>
+
+            <div class="step">
+                <h4>🔧 Apache Configuration:</h4>
+                <p>1. Open XAMPP Control Panel</p>
+                <p>2. Click "Config" next to Apache → "httpd.conf"</p>
+                <p>3. Find the line: <code>Listen 80</code></p>
+                <p>4. Make sure it's not configured to listen only on localhost</p>
+                <p>5. Save and restart Apache</p>
+            </div>
+
+            <div class="step">
+                <h4>🔥 Windows Firewall:</h4>
+                <p>1. Open Windows Defender Firewall</p>
+                <p>2. Click "Allow an app or feature through Windows Defender Firewall"</p>
+                <p>3. Make sure "Apache HTTP Server" is checked for both Private and Public networks</p>
+                <p>4. If not listed, click "Allow another app..." and add Apache</p>
+            </div>
+        </div>
+
+        <!-- Step 3: Test API Endpoint -->
+        <div class="test-section">
+            <h2>Step 3: Test API Endpoint</h2>
+            <button class="btn" onclick="testAPI()">Test Mobile API</button>
+            <div id="apiResult"></div>
+        </div>
+
+        <!-- Step 4: Mobile App Configuration -->
+        <div class="test-section info">
+            <h2>Step 4: Mobile App Configuration</h2>
+            <p><strong>API URL Updated:</strong></p>
+            <div class="code">/flutter_application_7/lib/OCR(UPDATED)/api/sync_document.php</div>
+
+            <p><strong>Make sure your mobile device is connected to the same WiFi network as your computer.</strong></p>
+
+            <div class="step">
+                <h4>📱 Testing from Mobile:</h4>
+                <p>1. Open your mobile browser</p>
+                <p>2. Go to: <a
+                    href="/flutter_application_7/lib/OCR(UPDATED)/api/test_connection.php"
+                    target="_blank">/flutter_application_7/lib/OCR(UPDATED)/api/test_connection.php</a>
+                </p>
+                <p>3. You should see a JSON response with success: true</p>
+                <p>4. If you get an error, check the firewall and XAMPP settings above</p>
+            </div>
+        </div>
+
+        <!-- Step 5: Debug Information -->
+        <div class="test-section">
+            <h2>Step 5: Debug Information</h2>
+            <button class="btn" onclick="getDebugInfo()">Get Debug Info</button>
+            <div id="debugInfo"></div>
+        </div>
+
+        <!-- Step 6: Test Upload -->
+        <div class="test-section">
+            <h2>Step 6: Test Document Upload</h2>
+            <p>After confirming the connection works:</p>
+            <ol>
+                <li>Open the Flutter app on your mobile device</li>
+                <li>Go to the Gallery page</li>
+                <li>Find a document and tap the purple cloud upload button</li>
+                <li>Confirm the upload</li>
+                <li>Check the tracking system: <a href="../tracking.php" target="_blank">tracking.php</a></li>
+            </ol>
+        </div>
+
+        <!-- Quick Links -->
+        <div class="test-section">
+            <h2>Quick Links</h2>
+            <a href="../tracking.php" target="_blank" class="btn">📋 Tracking System</a>
+            <a href="mobile_web_test.php" target="_blank" class="btn">🧪 Full Test Suite</a>
+            <a href="test_connection.php" target="_blank" class="btn">🔗 Connection Test</a>
+        </div>
+    </div>
+
+    <script>
+        const OCR_BASE = `${location.protocol}//${location.host}/flutter_application_7/lib/OCR(UPDATED)`;
+
+        async function testConnection() {
+            const resultDiv = document.getElementById('connectionResult');
+            resultDiv.innerHTML = '<div class="info">Testing connection...</div>';
+
+            try {
+                const response = await fetch('test_connection.php');
+                const result = await response.json();
+
+                if (result.success) {
+                    resultDiv.innerHTML = `
+                        <div class="success">
+                            ✅ Connection Successful!<br>
+                            Server IP: ${result.server_ip}<br>
+                            Client IP: ${result.client_ip}<br>
+                            Database: ${result.database_status}<br>
+                            Mobile Columns: ${result.mobile_columns_exist ? 'Yes' : 'No'}<br>
+                            Total Documents: ${result.total_documents}<br>
+                            Mobile Documents: ${result.mobile_documents}
+                        </div>
+                    `;
+                } else {
+                    resultDiv.innerHTML = `<div class="error">❌ Connection Failed: ${result.message}</div>`;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<div class="error">❌ Error: ${error.message}</div>`;
+            }
+        }
+
+        async function testAPI() {
+            const resultDiv = document.getElementById('apiResult');
+            resultDiv.innerHTML = '<div class="info">Testing API...</div>';
+
+            const testData = {
+                type: 'Debug Test Document',
+                employee_name: 'Debug User',
+                date_submitted: new Date().toISOString().split('T')[0],
+                current_holder: 'Debug Department',
+                end_location: 'Debug Archive',
+                status: 'Completed',
+                department: 'Debug',
+                file_type_icon: 'txt',
+                ocr_content: 'This is a debug test from the web interface.',
+                mobile_timestamp: 'DEBUG_' + Date.now(),
+                file_size: '1024',
+                user_email: 'debug@test.com'
+            };
+
+            try {
+                const response = await fetch('sync_document.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(testData)
+                });
+
+                const result = await response.json();
+
+                if (response.ok && result.success) {
+                    resultDiv.innerHTML = `
+                        <div class="success">
+                            ✅ API Test Successful!<br>
+                            Document ID: ${result.document_id}<br>
+                            Message: ${result.message}
+                        </div>
+                    `;
+                } else {
+                    resultDiv.innerHTML = `<div class="error">❌ API Test Failed: ${result.message || 'Unknown error'}</div>`;
+                }
+            } catch (error) {
+                resultDiv.innerHTML = `<div class="error">❌ API Error: ${error.message}</div>`;
+            }
+        }
+
+        async function getDebugInfo() {
+            const resultDiv = document.getElementById('debugInfo');
+            resultDiv.innerHTML = `
+                <div class="info">
+                    <strong>Network Information:</strong><br>
+                    PC Host: ${location.host}<br>
+                    XAMPP URL: ${location.protocol}//${location.host}/flutter_application_7/<br>
+                    API Endpoint: ${OCR_BASE}/api/sync_document.php<br>
+                    Test Connection: ${OCR_BASE}/api/test_connection.php<br><br>
+                    
+                    <strong>Troubleshooting:</strong><br>
+                    1. Make sure XAMPP Apache is running<br>
+                    2. Check Windows Firewall settings<br>
+                    3. Ensure mobile device is on same WiFi network<br>
+                    4. Test the connection URL from mobile browser first<br>
+                    5. Check XAMPP error logs if connection fails
+                </div>
+            `;
+        }
+    </script>
+</body>
+
+</html>

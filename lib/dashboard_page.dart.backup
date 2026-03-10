@@ -1,0 +1,4934 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:http/http.dart' as http;
+import 'package:image_picker/image_picker.dart';
+import 'dart:convert';
+import 'dart:async';
+import 'dart:io';
+import 'package:path_provider/path_provider.dart';
+import 'package:flutter_pdfview/flutter_pdfview.dart';
+
+// Import pages
+import 'camera_page.dart';
+import 'dashboard_document_preview.dart';
+import 'notification_page.dart';
+import 'login_page.dart';
+import 'gallery_page.dart';
+import 'main.dart' as app_main;
+import 'encryption_service.dart';
+
+/// Mobile-first Dashboard with Bottom Navigation
+class DashboardPage extends StatefulWidget {
+  final String? username;
+  final String? email;
+
+  const DashboardPage({super.key, this.username, this.email});
+
+  @override
+  State<DashboardPage> createState() => _DashboardPageState();
+}
+
+class _DashboardPageState extends State<DashboardPage>
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+  int _currentIndex = 0;
+  String username = 'Loading...';
+  String email = 'Loading...';
+  String searchQuery = '';
+  bool _showSearch = false;
+  final FocusNode _searchFocusNode = FocusNode();
+  Timer? _searchDebounce;
+  List<Map<String, String>> _searchSuggestions = [];
+  Timer? _activityTimer;
+  String? _lastActivityRefresh;
+  int? _lastSeenActivityMs; // last seen createdAtMs to notify on new
+  // Notifications state
+  int _unreadCount = 0;
+  List<Map<String, dynamic>> _notifications = [];
+  Timer? _notifTimer;
+
+  late PageController _pageController;
+
+  // KPI data (empty until wired to a real API)
+  final List<Map<String, dynamic>> _kpiData = [];
+
+  // Recent activity (loaded from backend)
+  final List<Map<String, dynamic>> _recentActivity = [];
+  // Cache of known document identities, keyed by file path/name hints
+  final Map<String, Map<String, String>> _identityCache = {};
+
+  // Helpers to split activity into "received" vs "user's own" actions
+  List<Map<String, dynamic>> _getReceivedActivityItems() {
+    final current = username.trim().toLowerCase();
+    return _recentActivity.where((m) {
+      final sender = (m['sender'] ?? '').toString().trim().toLowerCase();
+      // If we don't know the user name yet or sender is empty, keep in Recent Activity
+      if (current.isEmpty || current == 'loading...') return true;
+      if (sender.isEmpty) return true;
+      return sender != current;
+    }).toList();
+  }
+
+  List<Map<String, dynamic>> _getUserHistoryItems() {
+    final current = username.trim().toLowerCase();
+    if (current.isEmpty || current == 'loading...') return const [];
+    return _recentActivity.where((m) {
+      final sender = (m['sender'] ?? '').toString().trim().toLowerCase();
+      return sender.isNotEmpty && sender == current;
+    }).toList();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _pageController = PageController(initialPage: _currentIndex);
+    _fetchUserData();
+    _fetchRecentActivity();
+    _fetchNotifications();
+    // Observe app lifecycle to refresh when returning to foreground
+    WidgetsBinding.instance.addObserver(this);
+    // Periodic auto-refresh so web uploads appear on mobile Recent Activity
+    _activityTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      _fetchRecentActivity();
+    });
+    // Periodic notifications refresh
+    _notifTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      _fetchNotifications();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottomPad = MediaQuery.of(context).padding.bottom + 80;
+
+    return Scaffold(
+      appBar: AppBar(
+        elevation: 0,
+        title: _showSearch ? _buildSearchField() : Text(_getPageTitle()),
+        actions: [
+          IconButton(
+            icon: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                const Icon(Icons.notifications_none, color: Colors.white),
+                if (_unreadCount > 0)
+                  Positioned(
+                    right: -2,
+                    top: -2,
+                    child: Container(
+                      padding: const EdgeInsets.all(2),
+                      decoration: const BoxDecoration(
+                        color: Colors.red,
+                        shape: BoxShape.circle,
+                      ),
+                      constraints:
+                          const BoxConstraints(minWidth: 18, minHeight: 18),
+                      child: Center(
+                        child: Text(
+                          _unreadCount > 9 ? '9+' : _unreadCount.toString(),
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            onPressed: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const NotificationPage()),
+              );
+              if (mounted) {
+                _fetchNotifications();
+              }
+            },
+            tooltip: 'Notifications',
+          ),
+          // Profile button on the right side of notification
+          IconButton(
+            icon: const Icon(Icons.person_outline, color: Colors.white),
+            onPressed: () {
+              _pageController.animateToPage(
+                2,
+                duration: const Duration(milliseconds: 250),
+                curve: Curves.easeInOut,
+              );
+              setState(() => _currentIndex = 2);
+            },
+            tooltip: 'Profile',
+          ),
+        ],
+        systemOverlayStyle: SystemUiOverlayStyle.light,
+      ),
+      body: SafeArea(
+        top: false,
+        bottom: true,
+        child: PageView(
+          controller: _pageController,
+          onPageChanged: (index) {
+            setState(() => _currentIndex = index);
+            HapticFeedback.lightImpact();
+          },
+          children: [
+            _buildDashboardContent(bottomPad: bottomPad),
+            const GalleryPage(),
+            _buildProfileContent(bottomPad: bottomPad),
+          ],
+        ),
+      ),
+      floatingActionButton: _buildFAB(),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
+      bottomNavigationBar: SafeArea(
+        top: false,
+        child: _buildBottomNav(),
+      ),
+    );
+  }
+
+  Future<void> _openAllenDocumentDetail({
+    required String subtitle,
+    required String recipientDepartment,
+    String? fileUrl,
+  }) async {
+    try {
+      // Derive document name from subtitle like "Type • Name"
+      String name = subtitle.trim();
+      if (name.contains('•')) {
+        final parts = name.split('•');
+        if (parts.length >= 2) name = parts.last.trim();
+      }
+      final root = await _getServerRoot();
+      if (root == null) throw 'No server root';
+      final dept = recipientDepartment.trim();
+      if (dept.isEmpty || name.isEmpty) throw 'Missing info';
+
+      // Build candidates as in opener, try with common extensions if needed
+      String ext = '';
+      final i = name.lastIndexOf('.');
+      if (i != -1 && i < name.length - 1) {
+        ext = name.substring(i + 1).toLowerCase();
+      }
+      final names = <String>[name];
+      if (ext.isEmpty) {
+        names.addAll(['$name.jpg', '$name.jpeg', '$name.png', '$name.pdf']);
+      }
+      final paths = <String>[];
+      for (final n in names) {
+        final e = Uri.encodeComponent(n);
+        // Try both encoded and raw to handle servers expecting raw spaces.
+        for (final nameVariant in [e, n]) {
+          paths.addAll([
+            '$root/Archive/$dept/$nameVariant',
+            '$root/lib/Archive/$dept/$nameVariant',
+            '$root/lib/OCR(UPDATED)/Archive/$dept/$nameVariant',
+            '$root/uploads/$dept/$nameVariant',
+            '$root/Uploads/$dept/$nameVariant',
+            '$root/flutter_application_7/Archive/$dept/$nameVariant',
+          ]);
+        }
+      }
+
+      // Prefer provided URL if works
+      String? imageOrPdf;
+      if (fileUrl != null && fileUrl.trim().isNotEmpty) {
+        try {
+          final r = await http
+              .head(Uri.parse(fileUrl))
+              .timeout(const Duration(seconds: 5));
+          if (r.statusCode < 400) {
+            imageOrPdf = fileUrl;
+          } else {
+            // Even if HEAD fails (some servers), try using the URL anyway.
+            imageOrPdf = fileUrl;
+          }
+        } catch (_) {
+          imageOrPdf = fileUrl; // optimistic use
+        }
+      }
+      if (imageOrPdf == null) {
+        for (final u in paths) {
+          try {
+            final r = await http
+                .head(Uri.parse(u))
+                .timeout(const Duration(seconds: 5));
+            if (r.statusCode < 400) {
+              imageOrPdf = u;
+              break;
+            }
+          } catch (_) {
+            // Ignore and continue; we will fall back to first candidate
+          }
+        }
+      }
+      imageOrPdf ??= paths.isNotEmpty ? paths.first : null;
+      if (imageOrPdf == null) throw 'Missing filename/path';
+
+      // If it's a PDF, open with PDF viewer
+      final lowerUrl = imageOrPdf.toLowerCase();
+      if (lowerUrl.endsWith('.pdf')) {
+        await _openPdf(imageOrPdf, title: name);
+        return;
+      }
+
+      // Try to guess OCR text URL from image URL
+      String? ocrUrl;
+      try {
+        final uri = Uri.parse(imageOrPdf);
+        final p = uri.path.toLowerCase();
+        String txtCandidate;
+        if (p.endsWith('.jpg') || p.endsWith('.jpeg') || p.endsWith('.png')) {
+          txtCandidate = uri.toString().replaceAll(
+              RegExp(r'\.(jpg|jpeg|png)$', caseSensitive: false), '.txt');
+        } else {
+          // If pdf or unknown, try a sibling .txt with the same base name
+          final base = uri.toString();
+          final lastDot = base.lastIndexOf('.');
+          txtCandidate = lastDot != -1
+              ? ('${base.substring(0, lastDot)}.txt')
+              : ('$base.txt');
+        }
+        final head = await http
+            .head(Uri.parse(txtCandidate))
+            .timeout(const Duration(seconds: 4));
+        if (head.statusCode == 200) ocrUrl = txtCandidate;
+      } catch (_) {}
+
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => DashboardDocumentPreview(
+            title: name,
+            imageUrl: imageOrPdf!,
+            ocrUrl: ocrUrl,
+          ),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Open failed: $e')));
+      }
+    }
+  }
+
+  Map<String, String?> _extractIdentityFields(Map source) {
+    final Map<String, String?> out = {};
+
+    void capture(String key, dynamic value) {
+      if (value == null) return;
+      final str = value.toString().trim();
+      if (str.isEmpty) return;
+      out[key] = str;
+    }
+
+    dynamic metaRaw = source['meta'];
+    if (metaRaw is String) {
+      try {
+        final decoded = jsonDecode(metaRaw);
+        if (decoded is Map) metaRaw = decoded;
+      } catch (_) {}
+    }
+    if (metaRaw is Map) {
+      capture('tracking_id', metaRaw['tracking_id']);
+      capture('mobile_timestamp', metaRaw['mobile_timestamp']);
+      capture('doc_hash', metaRaw['doc_hash']);
+      capture('file_path', metaRaw['file_path']);
+    }
+
+    capture('tracking_id', source['tracking_id'] ?? source['trackingId']);
+    capture('mobile_timestamp',
+        source['mobile_timestamp'] ?? source['mobileTimestamp']);
+    capture('doc_hash', source['doc_hash'] ?? source['docHash']);
+    capture('file_path', source['file_path'] ?? source['filePath']);
+
+    return out;
+  }
+
+  Map<String, dynamic> _decorateActivityWithIdentity(
+      Map<String, dynamic> activity, Map source) {
+    // When the source is already a map of fields (from notifications API), we
+    // can safely store it so later fetches or UI cards can rehydrate even if
+    // the immediate entry lacks docHash/trackingId/mobileTimestamp.
+    if (source.isNotEmpty) {
+      _rememberIdentityForActivity(Map<String, dynamic>.from(source));
+    }
+
+    final identity = _extractIdentityFields(source);
+    if (identity.isEmpty) {
+      _hydrateActivityFromCache(activity);
+      return activity;
+    }
+
+    void assign(String targetKey, String identityKey) {
+      final value = identity[identityKey];
+      if (value != null && value.isNotEmpty) {
+        activity[targetKey] = value;
+      }
+    }
+
+    assign('trackingId', 'tracking_id');
+    assign('mobileTimestamp', 'mobile_timestamp');
+    assign('docHash', 'doc_hash');
+    assign('filePath', 'file_path');
+
+    final filePath = identity['file_path'];
+    if ((activity['fileUrl'] == null ||
+            activity['fileUrl'].toString().trim().isEmpty) &&
+        filePath != null &&
+        filePath.isNotEmpty) {
+      activity['fileUrl'] = filePath;
+    }
+
+    _rememberIdentityForActivity(activity);
+
+    return activity;
+  }
+
+  List<String> _identityKeyCandidates(Map activity) {
+    final List<String> keys = [];
+    String? normalize(dynamic value) {
+      if (value == null) return null;
+      final str = value.toString().trim();
+      return str.isEmpty ? null : str.toLowerCase();
+    }
+
+    final filePath = normalize(activity['filePath']);
+    if (filePath != null) keys.add('path:$filePath');
+
+    final subtitle = normalize(activity['subtitle']);
+    if (subtitle != null) keys.add('name:$subtitle');
+
+    final title = normalize(activity['title']);
+    if (title != null) keys.add('title:$title');
+
+    final combo = [activity['title'], activity['subtitle'], activity['sender']]
+        .whereType<String>()
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .join('|')
+        .toLowerCase();
+    if (combo.isNotEmpty) keys.add('combo:$combo');
+
+    return keys.isEmpty ? ['fallback:${activity.hashCode}'] : keys;
+  }
+
+  void _rememberIdentityForActivity(Map<String, dynamic> activity) {
+    String? readValue(String key) {
+      final v = activity[key];
+      if (v == null) return null;
+      final trimmed = v.toString().trim();
+      return trimmed.isEmpty ? null : trimmed;
+    }
+
+    String? readAny(List<String> keys) {
+      for (final key in keys) {
+        final value = readValue(key);
+        if (value != null) return value;
+      }
+      return null;
+    }
+
+    final Map<String, String> entry = {};
+
+    void store(List<String> sourceKeys, String targetKey) {
+      final value = readAny(sourceKeys);
+      if (value != null) entry[targetKey] = value;
+    }
+
+    store(const ['trackingId', 'tracking_id', 'trackingID'], 'trackingId');
+    store(const ['mobileTimestamp', 'mobile_timestamp'], 'mobileTimestamp');
+    store(const ['docHash', 'doc_hash'], 'docHash');
+    store(const ['filePath', 'file_path', 'fileUrl', 'file_url'], 'filePath');
+
+    if (entry.isEmpty) return;
+
+    for (final key in _identityKeyCandidates(activity)) {
+      final existing = _identityCache[key] ?? <String, String>{};
+      existing.addAll(entry);
+      _identityCache[key] = existing;
+    }
+  }
+
+  void _hydrateActivityFromCache(Map<String, dynamic> activity) {
+    bool needs(String field) =>
+        activity[field] == null || activity[field].toString().trim().isEmpty;
+
+    if (!needs('trackingId') &&
+        !needs('mobileTimestamp') &&
+        !needs('docHash') &&
+        !needs('filePath')) {
+      return;
+    }
+
+    for (final key in _identityKeyCandidates(activity)) {
+      final cached = _identityCache[key];
+      if (cached == null) continue;
+      for (final field in [
+        'trackingId',
+        'mobileTimestamp',
+        'docHash',
+        'filePath'
+      ]) {
+        if (needs(field) && cached[field]?.isNotEmpty == true) {
+          activity[field] = cached[field];
+        }
+      }
+      if (!needs('trackingId') &&
+          !needs('mobileTimestamp') &&
+          !needs('docHash') &&
+          !needs('filePath')) {
+        break;
+      }
+    }
+  }
+
+  Future<void> _openPdf(String urlOrPath, {String? title}) async {
+    try {
+      String pathToOpen = urlOrPath;
+      if (urlOrPath.startsWith('http://') || urlOrPath.startsWith('https://')) {
+        // Download to temp
+        final r = await http
+            .get(Uri.parse(urlOrPath))
+            .timeout(const Duration(seconds: 20));
+        if (r.statusCode >= 400) throw 'Download failed (${r.statusCode})';
+        final dir = await getTemporaryDirectory();
+        final name = title?.isNotEmpty == true
+            ? title!
+            : 'document_${DateTime.now().millisecondsSinceEpoch}.pdf';
+        final file = File('${dir.path}/$name');
+        await file.writeAsBytes(r.bodyBytes);
+        pathToOpen = file.path;
+      }
+
+      if (!await File(pathToOpen).exists()) {
+        throw 'File not found';
+      }
+
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => Scaffold(
+            appBar: AppBar(
+                title: Text(title?.isNotEmpty == true ? title! : 'Document')),
+            body: PDFView(
+              filePath: pathToOpen,
+              enableSwipe: true,
+              swipeHorizontal: true,
+              autoSpacing: true,
+              pageFling: true,
+            ),
+          ),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('PDF open error: $e')));
+      }
+    }
+  }
+
+  // Try to open the real server file for a recent activity item. If file_url is missing
+  // or points to a local/app-internal path, we attempt to build a proper HTTP URL from
+  // the server root, department and file name. If the file looks like an image, show
+  // an in-app preview; otherwise open externally.
+  Future<void> _openActivityFileOrPreview({
+    String? fileUrl,
+    String? fileName,
+    String? recipientDepartment,
+    bool isEncrypted = false,
+  }) async {
+    try {
+      // Resolve extension; also handle content patterns like "Type • DocumentName"
+      String nameGuess = (fileName ?? '').trim();
+      if (nameGuess.contains('•')) {
+        final parts = nameGuess.split('•');
+        if (parts.length >= 2) {
+          nameGuess = parts.last.trim();
+        }
+      }
+      String urlGuess = (fileUrl ?? '').trim();
+      String ext = '';
+      String lower = nameGuess.toLowerCase();
+      final dot = lower.lastIndexOf('.');
+      if (dot != -1 && dot < lower.length - 1) ext = lower.substring(dot + 1);
+      if (ext.isEmpty && urlGuess.isNotEmpty) {
+        final lu = urlGuess.toLowerCase();
+        final d2 = lu.lastIndexOf('.');
+        if (d2 != -1 && d2 < lu.length - 1) ext = lu.substring(d2 + 1);
+      }
+      final isImage =
+          ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].contains(ext);
+      final isPdf = ext == 'pdf';
+
+      // Handle encrypted documents
+      if (isEncrypted) {
+        await _handleEncryptedDocument(
+          urlOrPath: urlGuess,
+          fileName: nameGuess,
+          isImage: isImage,
+          isPdf: isPdf,
+        );
+        return;
+      }
+
+      // Prefer provided file_url, but if it's an Android app-internal path, don't prefix server root.
+      if (urlGuess.isNotEmpty) {
+        final looksLocal = urlGuess.startsWith('file://') ||
+            urlGuess.startsWith('/data/') ||
+            urlGuess.contains('/app_flutter/');
+        if (looksLocal) {
+          // If file exists locally, preview/open directly; otherwise fall through to server candidates
+          final localPath = urlGuess.startsWith('file://')
+              ? Uri.parse(urlGuess).toFilePath()
+              : urlGuess;
+          final f = File(localPath);
+          if (await f.exists()) {
+            if (isImage) {
+              await _previewImage(localPath);
+            } else {
+              if (isPdf) {
+                await _openPdf(localPath,
+                    title: nameGuess.isNotEmpty ? nameGuess : 'Document');
+              } else {
+                // For other local types, attempt external open (best-effort)
+                final ok = await launchUrl(Uri.file(localPath),
+                    mode: LaunchMode.externalApplication);
+                if (!ok && mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                      content: Text('No app available to open this file')));
+                }
+              }
+            }
+            return;
+          }
+          // else: fall through to build server candidates using dept+filename
+        } else {
+          if (isImage) {
+            await _previewImage(urlGuess,
+                localFallbackName: nameGuess,
+                recipientDepartment: recipientDepartment);
+          } else {
+            await _openUrl(urlGuess);
+          }
+          return;
+        }
+      }
+
+      // Build from server root + candidate paths and probe which exists.
+      // If no extension, try common ones.
+      final root = await _getServerRoot();
+      if (root == null) throw 'No server root';
+      final dept = (recipientDepartment ?? '').trim();
+      final name = nameGuess;
+      if (dept.isEmpty || name.isEmpty) throw 'Missing file info';
+      final namesToTry = <String>[];
+      namesToTry.add(name);
+      if (ext.isEmpty) {
+        for (final e in ['jpg', 'jpeg', 'png', 'pdf']) {
+          namesToTry.add('$name.$e');
+        }
+      }
+      final candidates = <String>[];
+      for (final n in namesToTry) {
+        final encodedName = Uri.encodeComponent(n);
+        candidates.addAll([
+          '$root/Archive/$dept/$encodedName',
+          '$root/lib/Archive/$dept/$encodedName',
+          '$root/lib/OCR(UPDATED)/Archive/$dept/$encodedName',
+          '$root/uploads/$dept/$encodedName',
+          '$root/Uploads/$dept/$encodedName',
+          '$root/flutter_application_7/Archive/$dept/$encodedName',
+        ]);
+      }
+
+      String? working;
+      for (final u in candidates) {
+        try {
+          final resp =
+              await http.head(Uri.parse(u)).timeout(const Duration(seconds: 4));
+          if (resp.statusCode == 200) {
+            working = u;
+            break;
+          }
+        } catch (_) {}
+      }
+      working ??= candidates.first; // fallback
+
+      if (isImage) {
+        await _previewImage(working,
+            localFallbackName: name, recipientDepartment: recipientDepartment);
+      } else {
+        final ok = await launchUrl(Uri.parse(working),
+            mode: LaunchMode.externalApplication);
+        if (!ok && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Could not open link')));
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Invalid link: $e')));
+      }
+    }
+  }
+
+  Future<void> _previewImage(String urlOrPath,
+      {String? localFallbackName, String? recipientDepartment}) async {
+    try {
+      // If local file exists, show it.
+      final f = File(urlOrPath);
+      if (await f.exists()) {
+        await Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => Scaffold(
+              appBar: AppBar(
+                  title: Text(localFallbackName?.isNotEmpty == true
+                      ? localFallbackName!
+                      : 'Image')),
+              body: Center(
+                child: InteractiveViewer(
+                  child: Image.file(f, fit: BoxFit.contain),
+                ),
+              ),
+            ),
+          ),
+        );
+        return;
+      }
+
+      // Fallback to network (full-screen)
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => Scaffold(
+            appBar: AppBar(
+                title: Text(localFallbackName?.isNotEmpty == true
+                    ? localFallbackName!
+                    : 'Image')),
+            body: Center(
+              child: InteractiveViewer(
+                child: Image.network(
+                  urlOrPath,
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) {
+                    return Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.broken_image, size: 48),
+                          const SizedBox(height: 12),
+                          const Text('Could not load image'),
+                          const SizedBox(height: 12),
+                          OutlinedButton(
+                            onPressed: () {
+                              _openUrl(urlOrPath);
+                            },
+                            child: const Text('Open externally'),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Preview error: $e')));
+      }
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> _fetchAllUsers() async {
+    try {
+      final root = await _getServerRoot();
+      if (root == null) return [];
+      final uri =
+          Uri.parse('$root/lib/OCR(UPDATED)/api/list_control_entities.php');
+      final r = await http.get(uri).timeout(const Duration(seconds: 10));
+      if (r.statusCode >= 400 || r.body.isEmpty) return [];
+      final data = json.decode(r.body) as Map<String, dynamic>;
+      final List list = (data['users'] ?? []) as List;
+      return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  String _deriveDocType(String text, String? fallbackType) {
+    try {
+      String t = text.trim();
+      // Pattern: "Purchase Request • Carl" -> take left side
+      if (t.contains('•')) {
+        t = t.split('•').first.trim();
+      }
+      // Pattern: "New Document from Carl" -> take left side
+      if (t.contains(' from ')) {
+        t = t.split(' from ').first.trim();
+      }
+      if (t.isNotEmpty) {
+        return t;
+      }
+      if (fallbackType != null && fallbackType.trim().isNotEmpty) {
+        return fallbackType.trim();
+      }
+      return 'Document';
+    } catch (_) {
+      return fallbackType?.trim().isNotEmpty == true
+          ? fallbackType!.trim()
+          : 'Document';
+    }
+  }
+
+  Future<void> _openRouteDialogWithDetails({
+    required String initialReceiverDept,
+    required String docType,
+    required String fileName,
+    required String filePath,
+    String? mobileTimestamp,
+    String? docHash,
+    String? trackingId,
+  }) async {
+    final unameCtrl = TextEditingController();
+    final deptCtrl = TextEditingController(text: initialReceiverDept);
+    final typeCtrl = TextEditingController(text: docType);
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (ctx) {
+        final mq = MediaQuery.of(ctx);
+        return Padding(
+          padding: EdgeInsets.only(
+              left: 16, right: 16, top: 16, bottom: mq.viewInsets.bottom + 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text('Route Document',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 10),
+              FutureBuilder<List<Map<String, dynamic>>>(
+                future: _fetchAllUsers(),
+                builder: (c, snap) {
+                  final users = snap.data ?? [];
+                  if (snap.connectionState == ConnectionState.waiting) {
+                    return const LinearProgressIndicator(minHeight: 2);
+                  }
+
+                  // Build distinct list of departments from users
+                  final Set<String> depts = {
+                    for (final u in users)
+                      (u['department'] ?? '').toString().trim()
+                  }..removeWhere((e) => e.isEmpty);
+
+                  // Helper: when a department is chosen, auto-pick a default user
+                  void _selectDept(String deptName) {
+                    deptCtrl.text = deptName;
+                    // Prefer a user that exactly matches this department
+                    final match = users.firstWhere(
+                      (u) =>
+                          (u['department'] ?? '').toString().trim() == deptName,
+                      orElse: () =>
+                          users.isNotEmpty ? users.first : <String, dynamic>{},
+                    );
+                    final uname = (match['user'] ?? '').toString();
+                    unameCtrl.text = uname;
+                    setState(() {});
+                  }
+
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      TextField(
+                        controller: unameCtrl,
+                        readOnly: true,
+                        decoration: const InputDecoration(
+                          labelText: 'Receiver Username (auto)',
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      DropdownButtonFormField<String>(
+                        value: depts.contains(deptCtrl.text)
+                            ? deptCtrl.text
+                            : null,
+                        items: depts
+                            .map((d) => DropdownMenuItem<String>(
+                                  value: d,
+                                  child: Text(d.isNotEmpty ? d : 'Unknown'),
+                                ))
+                            .toList(),
+                        onChanged: (v) {
+                          if (v == null) return;
+                          _selectDept(v);
+                        },
+                        decoration: const InputDecoration(
+                          labelText: 'Receiver Department',
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: typeCtrl,
+                readOnly: true,
+                decoration: const InputDecoration(labelText: 'Document Type'),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(content: Text('Routing cancelled')),
+                          );
+                        }
+                      },
+                      child: const Text('Cancel'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: () async {
+                        final recvUser = unameCtrl.text.trim();
+                        final recvDept = deptCtrl.text.trim();
+                        final dtype = typeCtrl.text.trim().isNotEmpty
+                            ? typeCtrl.text.trim()
+                            : 'Document';
+                        final fname = fileName;
+                        Navigator.pop(ctx);
+                        await _routeDocument(
+                          receiverUsername: recvUser,
+                          receiverDepartment: recvDept,
+                          type: dtype,
+                          fileName: fname,
+                          filePath: filePath,
+                          mobileTimestamp: mobileTimestamp,
+                          docHash: docHash,
+                          trackingId: trackingId,
+                        );
+                      },
+                      child: const Text('Route'),
+                    ),
+                  )
+                ],
+              )
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _routeDocument({
+    required String receiverUsername,
+    required String receiverDepartment,
+    required String type,
+    required String fileName,
+    required String filePath,
+    String? mobileTimestamp,
+    String? docHash,
+    String? trackingId,
+  }) async {
+    try {
+      final root = await _getServerRoot();
+      if (root == null) return;
+      final prefs = await SharedPreferences.getInstance();
+      final sender = prefs.getString('user_name') ?? '';
+      final senderDept = prefs.getString('user_department') ?? '';
+      if (sender.isEmpty || senderDept.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Missing sender info. Re-login.')));
+        }
+        return;
+      }
+      if (receiverUsername.isEmpty && receiverDepartment.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Provide receiver username or department')));
+        }
+        return;
+      }
+
+      final uri = Uri.parse('$root/lib/OCR(UPDATED)/api/route_document.php');
+      final stableTs = (mobileTimestamp?.trim().isNotEmpty ?? false)
+          ? mobileTimestamp!.trim()
+          : DateTime.now().millisecondsSinceEpoch.toString();
+      final payload = {
+        'sender_name': sender,
+        'sender_department': senderDept,
+        'receiver_username': receiverUsername,
+        'receiver_department': receiverDepartment,
+        'type': type,
+        'file_name': fileName,
+        'file_path': filePath,
+        'mobile_timestamp': stableTs,
+        'base': root,
+      };
+      if (docHash?.trim().isNotEmpty ?? false) {
+        payload['doc_hash'] = docHash!.trim();
+      }
+      if (trackingId?.trim().isNotEmpty ?? false) {
+        payload['tracking_id'] = trackingId!.trim();
+      }
+      final r = await http
+          .post(uri, body: payload)
+          .timeout(const Duration(seconds: 12));
+      if (mounted) {
+        if (r.statusCode < 400) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('Routed')));
+          await _fetchRecentActivity();
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text('Route failed (${r.statusCode}): ${r.body}')));
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Network error: $e')));
+      }
+    }
+  }
+
+  // Local helper to delete a notification by id for Confirm actions
+  Future<bool> _deleteNotificationById(int id) async {
+    try {
+      final root = await _getServerRoot();
+      if (root == null) return false;
+
+      final notifBase = '$root/lib/OCR(UPDATED)/api/notifications.php';
+
+      // 1) Try DELETE
+      try {
+        final resp = await http
+            .delete(Uri.parse('$notifBase?id=$id'))
+            .timeout(const Duration(seconds: 8));
+        if (resp.statusCode >= 200 && resp.statusCode < 300) return true;
+        try {
+          final data = jsonDecode(resp.body);
+          if (data is Map && (data['success'] == true)) return true;
+        } catch (_) {}
+      } catch (_) {}
+
+      // 2) Try POST action=delete
+      try {
+        final resp = await http.post(Uri.parse(notifBase), body: {
+          'action': 'delete',
+          'id': id.toString(),
+        }).timeout(const Duration(seconds: 8));
+        if (resp.statusCode >= 200 && resp.statusCode < 300) return true;
+        try {
+          final data = jsonDecode(resp.body);
+          if (data is Map && (data['success'] == true)) return true;
+        } catch (_) {}
+      } catch (_) {}
+
+      // 3) Fallback GET action=delete
+      try {
+        final resp = await http
+            .get(Uri.parse('$notifBase?action=delete&id=$id'))
+            .timeout(const Duration(seconds: 8));
+        if (resp.statusCode >= 200 && resp.statusCode < 300) return true;
+        try {
+          final data = jsonDecode(resp.body);
+          if (data is Map && (data['success'] == true)) return true;
+        } catch (_) {}
+      } catch (_) {}
+
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _confirmLogout() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) {
+        return AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          title: const Text('Do you want to Logout?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(false),
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () => Navigator.of(ctx).pop(true),
+              child: const Text('Delete'),
+            ),
+          ],
+        );
+      },
+    );
+    if (confirmed == true && mounted) {
+      Navigator.pushReplacement(
+        context,
+        PageRouteBuilder(
+          pageBuilder: (_, __, ___) => const LoginPage(),
+          transitionsBuilder: (_, anim, __, child) {
+            final fade =
+                CurvedAnimation(parent: anim, curve: Curves.easeOutCubic);
+            return FadeTransition(opacity: fade, child: child);
+          },
+          transitionDuration: const Duration(milliseconds: 220),
+        ),
+      );
+    }
+  }
+
+  Future<void> _openSettingsDialog() async {
+    final app = app_main.MyApp.of(context);
+    ThemeMode current = Theme.of(context).brightness == Brightness.dark
+        ? ThemeMode.dark
+        : ThemeMode.light;
+    ThemeMode selectedMode = current;
+    Color selectedSeed = Theme.of(context).colorScheme.primary;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (sheetCtx) {
+        final mq = MediaQuery.of(sheetCtx);
+        return Padding(
+          padding: EdgeInsets.only(bottom: mq.viewInsets.bottom + 16),
+          child: StatefulBuilder(
+            builder: (context, setStateDialog) {
+              return SafeArea(
+                top: false,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const SizedBox(height: 12),
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 5,
+                        decoration: BoxDecoration(
+                          color:
+                              Theme.of(context).dividerColor.withOpacity(0.6),
+                          borderRadius: BorderRadius.circular(3),
+                        ),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+                      child: Text(
+                        'Dark mode',
+                        style: TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w800,
+                            color: Theme.of(context).colorScheme.onSurface),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 20),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Theme',
+                              style: TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurface
+                                      .withOpacity(0.9))),
+                          const SizedBox(height: 10),
+                          Container(
+                            decoration: BoxDecoration(
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .surfaceContainerHighest
+                                  .withOpacity(0.4),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(12),
+                                    onTap: () => setStateDialog(
+                                        () => selectedMode = ThemeMode.light),
+                                    child: AnimatedContainer(
+                                      duration:
+                                          const Duration(milliseconds: 180),
+                                      padding: const EdgeInsets.symmetric(
+                                          vertical: 12),
+                                      alignment: Alignment.center,
+                                      decoration: BoxDecoration(
+                                        color: selectedMode == ThemeMode.light
+                                            ? Theme.of(context)
+                                                .colorScheme
+                                                .primary
+                                                .withOpacity(0.12)
+                                            : Colors.transparent,
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      child: Text('Light',
+                                          style: TextStyle(
+                                              fontWeight: FontWeight.w600,
+                                              color: selectedMode ==
+                                                      ThemeMode.light
+                                                  ? Theme.of(context)
+                                                      .colorScheme
+                                                      .primary
+                                                  : Theme.of(context)
+                                                      .colorScheme
+                                                      .onSurface)),
+                                    ),
+                                  ),
+                                ),
+                                Expanded(
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(12),
+                                    onTap: () => setStateDialog(
+                                        () => selectedMode = ThemeMode.dark),
+                                    child: AnimatedContainer(
+                                      duration:
+                                          const Duration(milliseconds: 180),
+                                      padding: const EdgeInsets.symmetric(
+                                          vertical: 12),
+                                      alignment: Alignment.center,
+                                      decoration: BoxDecoration(
+                                        color: selectedMode == ThemeMode.dark
+                                            ? Theme.of(context)
+                                                .colorScheme
+                                                .primary
+                                                .withOpacity(0.12)
+                                            : Colors.transparent,
+                                        borderRadius: BorderRadius.circular(12),
+                                      ),
+                                      child: Text('Dark',
+                                          style: TextStyle(
+                                              fontWeight: FontWeight.w600,
+                                              color:
+                                                  selectedMode == ThemeMode.dark
+                                                      ? Theme.of(context)
+                                                          .colorScheme
+                                                          .primary
+                                                      : Theme.of(context)
+                                                          .colorScheme
+                                                          .onSurface)),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          Text('Accent color',
+                              style: TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurface
+                                      .withOpacity(0.9))),
+                          const SizedBox(height: 10),
+                          Wrap(
+                            spacing: 12,
+                            runSpacing: 12,
+                            children: [
+                              Colors.teal,
+                              Colors.blue,
+                              Colors.indigo,
+                              Colors.purple,
+                              Colors.green,
+                              Colors.orange,
+                              Colors.red,
+                              Colors.pink,
+                            ].map((c) {
+                              final isSel = selectedSeed.value == c.value;
+                              return InkWell(
+                                customBorder: const CircleBorder(),
+                                onTap: () =>
+                                    setStateDialog(() => selectedSeed = c),
+                                child: AnimatedContainer(
+                                  duration: const Duration(milliseconds: 160),
+                                  width: 36,
+                                  height: 36,
+                                  decoration: BoxDecoration(
+                                    color: c,
+                                    shape: BoxShape.circle,
+                                    boxShadow: isSel
+                                        ? [
+                                            BoxShadow(
+                                                color: c.withOpacity(0.45),
+                                                blurRadius: 10,
+                                                spreadRadius: 1)
+                                          ]
+                                        : null,
+                                    border: Border.all(
+                                        color: isSel
+                                            ? Colors.white
+                                            : Colors.transparent,
+                                        width: 2),
+                                  ),
+                                ),
+                              );
+                            }).toList(),
+                          ),
+                          const SizedBox(height: 20),
+                          Container(
+                            padding: const EdgeInsets.all(14),
+                            decoration: BoxDecoration(
+                              color: Theme.of(context).cardColor,
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(
+                                  color: Theme.of(context)
+                                      .dividerColor
+                                      .withOpacity(0.3)),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(Icons.palette_outlined,
+                                    color: selectedSeed),
+                                const SizedBox(width: 12),
+                                const Expanded(
+                                    child: Text('Preview',
+                                        style: TextStyle(
+                                            fontWeight: FontWeight.w600))),
+                                Container(
+                                    width: 18,
+                                    height: 18,
+                                    decoration: BoxDecoration(
+                                        color: selectedSeed,
+                                        shape: BoxShape.circle)),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: () => Navigator.pop(context),
+                              style: OutlinedButton.styleFrom(
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 14),
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(14))),
+                              child: const Text('Close'),
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: ElevatedButton(
+                              onPressed: () async {
+                                if (app != null) {
+                                  await app.setThemeMode(selectedMode);
+                                  await app.setSeedColor(selectedSeed);
+                                }
+                                if (mounted) Navigator.pop(context);
+                              },
+                              style: ElevatedButton.styleFrom(
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 14),
+                                  shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(14))),
+                              child: const Text('Apply'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _openViewProfileDialog() async {
+    String dept = 'Unknown';
+    String uname = username;
+    String uemail = email;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      dept = prefs.getString('user_department') ?? dept;
+      uname = prefs.getString('user_name') ?? uname;
+      uemail = prefs.getString('user_email') ?? uemail;
+    } catch (_) {}
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) {
+        return SafeArea(
+          top: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.fromLTRB(24, 24, 24, 20),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [Colors.blue.shade600, Colors.blue.shade800],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius:
+                      const BorderRadius.vertical(top: Radius.circular(24)),
+                ),
+                child: Column(
+                  children: [
+                    CircleAvatar(
+                      radius: 42,
+                      backgroundColor: Colors.white,
+                      child: Icon(Icons.person,
+                          size: 48, color: Colors.blue.shade700),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      uname,
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w700),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.apartment,
+                              color: Colors.white, size: 16),
+                          const SizedBox(width: 6),
+                          Text(dept,
+                              style: const TextStyle(
+                                  color: Colors.white, fontSize: 12)),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _profileTile(
+                        icon: Icons.badge_outlined,
+                        label: 'Username',
+                        value: uname),
+                    const SizedBox(height: 10),
+                    _profileTile(
+                        icon: Icons.apartment_outlined,
+                        label: 'Department',
+                        value: dept),
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blue.shade700,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(14)),
+                        ),
+                        onPressed: () => Navigator.pop(ctx),
+                        child: const Text('Close'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _profileTile(
+      {required IconData icon, required String label, required String value}) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.05),
+            blurRadius: 8,
+            offset: const Offset(0, 4),
+          ),
+        ],
+        border:
+            Border.all(color: Theme.of(context).dividerColor.withOpacity(0.3)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Colors.blue.shade50,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, color: Colors.blue.shade700),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label,
+                    style: TextStyle(
+                        color: Theme.of(context).hintColor, fontSize: 12)),
+                const SizedBox(height: 4),
+                Text(value,
+                    style: const TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.w600)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _updateUserName(String newName) async {
+    try {
+      final root = await _getServerRoot();
+      if (root == null) return;
+      final prefs = await SharedPreferences.getInstance();
+      // Read as int first to avoid type cast error when the key was stored as int
+      String? userId = prefs.getInt('user_id')?.toString();
+      userId ??= prefs.getString('user_id');
+      final userEmail = prefs.getString('user_email') ?? '';
+      if (userId == null || userId.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('User ID not found. Please re-login.')),
+        );
+        return;
+      }
+      final rootUri = Uri.parse(root);
+      final uri = rootUri.replace(
+        pathSegments: [
+          ...rootUri.pathSegments,
+          'lib',
+          'OCR(UPDATED)',
+          'api',
+          'update_profile.php',
+        ],
+      );
+      debugPrint('[ProfileUpdate] POST -> $uri');
+
+      // Try JSON first
+      http.Response response;
+      try {
+        response = await http
+            .post(
+              uri,
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode(
+                  {'user_id': userId, 'email': userEmail, 'name': newName}),
+            )
+            .timeout(const Duration(seconds: 10));
+      } catch (e) {
+        // Fallback to form-urlencoded if JSON fails at network level
+        response = await http.post(uri, body: {
+          'user_id': userId,
+          'email': userEmail,
+          'name': newName
+        }).timeout(const Duration(seconds: 10));
+      }
+
+      if (response.statusCode >= 200 && response.statusCode < 400) {
+        // optimistic update + persist
+        await prefs.setString('user_name', newName);
+        if (mounted) {
+          setState(() {
+            username = newName;
+          });
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Profile updated')),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              content: Text(
+                  'Update failed (${response.statusCode}): ${response.body.isNotEmpty ? response.body : 'Server error'}')),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Network error while updating profile: $e')),
+      );
+    }
+  }
+
+  void _showActivityDetails(Map<String, dynamic> activity) {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      isScrollControlled: false,
+      builder: (_) {
+        return Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 48,
+                    height: 48,
+                    decoration: BoxDecoration(
+                      color: Colors.blue.shade50,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(
+                        activity['icon'] as IconData? ?? Icons.notifications,
+                        color: Colors.blue.shade700),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(activity['title']?.toString() ?? 'Activity',
+                            style: const TextStyle(
+                                fontSize: 16, fontWeight: FontWeight.w700)),
+                        const SizedBox(height: 4),
+                        Text(activity['time']?.toString() ?? '',
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.grey)),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.pop(context),
+                  )
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text(activity['subtitle']?.toString() ?? '',
+                  style: TextStyle(
+                      fontSize: 14,
+                      color: Theme.of(context).colorScheme.onSurface)),
+              if (activity['id'] != null) ...[
+                const SizedBox(height: 8),
+                Text('ID: ${activity['id']}',
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withOpacity(0.7))),
+              ],
+              if ((activity['type'] ?? '').toString().isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text('Type: ${activity['type']}',
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withOpacity(0.7))),
+              ],
+              const SizedBox(height: 12),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  void dispose() {
+    _activityTimer?.cancel();
+    _notifTimer?.cancel();
+    _pageController.dispose();
+    _searchDebounce?.cancel();
+    _searchFocusNode.dispose();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // Refresh immediately when user returns to the app
+      _fetchRecentActivity();
+      _fetchNotifications();
+    }
+  }
+
+  Future<void> _fetchNotifications() async {
+    try {
+      final root = await _getServerRoot();
+      if (root == null) return;
+      final prefs = await SharedPreferences.getInstance();
+      final uname = prefs.getString('user_name') ?? username;
+      if (uname.isEmpty) return;
+
+      final rootUri = Uri.parse(root);
+      final uri = rootUri.replace(
+        pathSegments: [
+          ...rootUri.pathSegments,
+          'lib',
+          'OCR(UPDATED)',
+          'api',
+          'notifications.php',
+        ],
+        queryParameters: {
+          'action': 'list',
+          'recipient_username': uname,
+          'limit': '25',
+        },
+      );
+      debugPrint('[Notif] GET -> $uri');
+      final resp = await http.get(uri).timeout(const Duration(seconds: 10));
+      if (resp.statusCode == 200 && resp.body.isNotEmpty) {
+        final data = jsonDecode(resp.body);
+        if (data is Map && data['success'] == true) {
+          final list = (data['notifications'] as List<dynamic>? ?? [])
+              .map<Map<String, dynamic>>((e) => Map<String, dynamic>.from(e))
+              .toList();
+          if (mounted) {
+            setState(() {
+              _notifications = list;
+              // Treat status!='read' as unread
+              _unreadCount = list
+                  .where((n) => (n['status']?.toString() ?? 'new') != 'read')
+                  .length;
+            });
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[Notif] fetch error: $e');
+    }
+  }
+
+  Future<void> _fetchUserData() async {
+    await Future.delayed(const Duration(milliseconds: 300));
+    final routeArgs =
+        ModalRoute.of(context)?.settings.arguments as Map<String, dynamic>?;
+
+    String? savedUsername;
+    String? savedEmail;
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      savedUsername = prefs.getString('user_name');
+      savedEmail = prefs.getString('user_email');
+    } catch (e) {
+      debugPrint('Error loading user data: $e');
+    }
+
+    if (mounted) {
+      setState(() {
+        username = widget.username ??
+            routeArgs?['username'] ??
+            savedUsername ??
+            'User';
+        email = widget.email ??
+            routeArgs?['email'] ??
+            savedEmail ??
+            'user@example.com';
+      });
+    }
+  }
+
+  String _getPageTitle() {
+    switch (_currentIndex) {
+      case 0:
+        return 'Dashboard';
+      case 1:
+        return 'Archive';
+      case 2:
+        return 'Profile';
+      default:
+        return 'Dashboard';
+    }
+  }
+
+  Widget _buildSearchField() {
+    return SizedBox(
+      height: 40,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            focusNode: _searchFocusNode,
+            autofocus: true,
+            onChanged: (value) {
+              setState(() => searchQuery = value);
+              _searchDebounce?.cancel();
+              _searchDebounce = Timer(const Duration(milliseconds: 300), () {
+                _fetchSearchSuggestions(value);
+              });
+            },
+            decoration: InputDecoration(
+              hintText: 'Search documents, departments, OCR...',
+              hintStyle: const TextStyle(color: Colors.white70),
+              border: InputBorder.none,
+            ),
+            style: const TextStyle(color: Colors.white, fontSize: 18),
+          ),
+          if (_searchSuggestions.isNotEmpty)
+            Container(
+              constraints: const BoxConstraints(maxHeight: 180),
+              margin: const EdgeInsets.only(top: 4),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: ListView.builder(
+                itemCount: _searchSuggestions.length,
+                shrinkWrap: true,
+                itemBuilder: (context, index) {
+                  final suggestion = _searchSuggestions[index];
+                  return ListTile(
+                    dense: true,
+                    title: Text(suggestion['label'] ?? ''),
+                    subtitle:
+                        Text((suggestion['field'] ?? '').replaceAll('_', ' ')),
+                    onTap: () {
+                      setState(() {
+                        searchQuery = suggestion['label'] ?? '';
+                        _searchSuggestions = [];
+                      });
+                      _searchFocusNode.unfocus();
+                    },
+                  );
+                },
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _fetchSearchSuggestions(String query) async {
+    if (query.trim().length < 2) {
+      setState(() => _searchSuggestions = []);
+      return;
+    }
+    try {
+      final root = await _getServerRoot();
+      if (root == null) return;
+      final uri = Uri.parse('$root/lib/OCR(UPDATED)/tracking.php').replace(
+        queryParameters: {'action': 'search_suggest', 'q': query},
+      );
+      final resp = await http.get(uri).timeout(const Duration(seconds: 8));
+      if (resp.statusCode == 200 && resp.body.isNotEmpty) {
+        final data = jsonDecode(resp.body);
+        final suggestions = (data['suggestions'] as List?)
+                ?.whereType<Map>()
+                .map((e) => {
+                      'label': e['label']?.toString() ?? '',
+                      'field': e['field']?.toString() ?? '',
+                    })
+                .where((e) => (e['label'] ?? '').isNotEmpty)
+                .toList() ??
+            [];
+        setState(() => _searchSuggestions = suggestions);
+      }
+    } catch (_) {}
+  }
+
+  Widget _buildBody({required double bottomPad}) {
+    switch (_currentIndex) {
+      case 0:
+        return _buildDashboardContent(bottomPad: bottomPad);
+      case 1:
+        return const GalleryPage();
+      case 2:
+        return _buildProfileContent(bottomPad: bottomPad);
+      default:
+        return _buildDashboardContent(bottomPad: bottomPad);
+    }
+  }
+
+  Widget _buildDashboardContent({required double bottomPad}) {
+    return RefreshIndicator(
+      onRefresh: () async {
+        await Future.delayed(const Duration(seconds: 1));
+        setState(() {});
+      },
+      child: ListView(
+        padding: EdgeInsets.only(bottom: bottomPad),
+        children: [
+          _buildWelcomeBanner(),
+          const SizedBox(height: 16),
+          _buildSectionHeader('Recent Activity', onTap: () async {
+            final changed = await Navigator.push<bool>(
+              context,
+              MaterialPageRoute(
+                builder: (_) => RecentUploadPage(
+                  items: List<Map<String, dynamic>>.from(
+                    _getReceivedActivityItems(),
+                  ),
+                ),
+              ),
+            );
+            if (changed == true) {
+              await _fetchRecentActivity();
+            }
+          }),
+          _buildRecentActivityFeed(),
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWelcomeBanner() {
+    return Container(
+      margin: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Colors.blue.shade600, Colors.blue.shade800],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.blue.withOpacity(0.3),
+            blurRadius: 8,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          CircleAvatar(
+            radius: 30,
+            backgroundColor: Colors.white,
+            child: Icon(Icons.person, size: 35, color: Colors.blue.shade700),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Welcome back,',
+                  style: TextStyle(
+                    color: Colors.white70,
+                    fontSize: 14,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  username,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Build server root from saved preferences, preferring explicit server_root
+  Future<String?> _getServerRoot() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      String? root = prefs.getString('server_root');
+      if (root == null || root.isEmpty) {
+        final detected = prefs.getString('detected_server_url');
+        if (detected != null && detected.isNotEmpty) {
+          root = detected;
+        }
+      }
+      if (root == null || root.isEmpty) {
+        const fixed = 'http://192.168.254.103/flutter_application_7/api';
+        root = fixed;
+      }
+      if (root.endsWith('/api')) root = root.substring(0, root.length - 4);
+      return root;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _archiveActivityFile({
+    required String? fileUrl,
+    required String displayName,
+  }) async {
+    try {
+      final url = (fileUrl ?? '').trim();
+      if (url.isEmpty) return;
+
+      String resolved = url;
+      if (!resolved.contains('://')) {
+        final root = await _getServerRoot();
+        if (root == null) return;
+        if (resolved.startsWith('/')) {
+          resolved = '$root$resolved';
+        } else {
+          resolved = '$root/$resolved';
+        }
+      }
+
+      final resp = await http.get(Uri.parse(resolved)).timeout(
+            const Duration(seconds: 15),
+          );
+      if (resp.statusCode >= 400) return;
+
+      final prefs = await SharedPreferences.getInstance();
+      final userDepartment = prefs.getString('user_department') ?? 'General';
+      final dir = await getApplicationDocumentsDirectory();
+      final archiveDir = Directory('${dir.path}/Archive/$userDepartment');
+      if (!await archiveDir.exists()) {
+        await archiveDir.create(recursive: true);
+      }
+
+      final now = DateTime.now().millisecondsSinceEpoch;
+      String ext = '';
+      final uriPath = Uri.parse(resolved).path;
+      final dot = uriPath.lastIndexOf('.');
+      if (dot != -1 && dot < uriPath.length - 1) {
+        ext = uriPath.substring(dot);
+      }
+      String prefix = 'IMG_';
+      if (ext.toLowerCase() == '.pdf') {
+        prefix = 'PDF_';
+      }
+      final fileName = '$prefix$now${ext.isNotEmpty ? ext : '.bin'}';
+      final outFile = File('${archiveDir.path}/$fileName');
+      await outFile.writeAsBytes(resp.bodyBytes, flush: true);
+
+      final metaPath = '${archiveDir.path}/OCR_$now.txt';
+      final metaFile = File(metaPath);
+      final typeLine = 'Document Type: $displayName';
+      final nameLine = 'Document Name: $displayName';
+      await metaFile.writeAsString('$typeLine\n$nameLine');
+    } catch (_) {}
+  }
+
+  Future<void> _confirmDeleteActivity(Map<String, dynamic> activity) async {
+    final title = activity['title']?.toString() ?? 'this item';
+    final bool? ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Activity'),
+        content: Text(
+            'Are you sure you want to delete "$title" from Recent Activity?'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await _deleteActivity(activity);
+      await _fetchRecentActivity();
+    }
+  }
+
+  Future<void> _deleteActivity(Map<String, dynamic> activity) async {
+    try {
+      final root = await _getServerRoot();
+      if (root == null) return;
+      final id = activity['id']?.toString();
+      if (id == null || id.isEmpty) return;
+
+      // Try modern API: /api/recent_activity.php?action=delete&id=ID (POST)
+      try {
+        final uri = Uri.parse('$root/api/recent_activity.php')
+            .replace(queryParameters: {'action': 'delete', 'id': id});
+        final r = await http.post(uri).timeout(const Duration(seconds: 8));
+        if (r.statusCode < 400) return; // assume success
+      } catch (_) {}
+
+      // Do NOT touch notifications.php here; this helper is for
+      // Recent Activity/Uploads and should only affect document/route data.
+    } catch (_) {}
+  }
+
+  Future<void> _fetchRecentActivity() async {
+    try {
+      final root = await _getServerRoot();
+      if (root == null) return;
+      final prefs = await SharedPreferences.getInstance();
+      final currentUser = prefs.getString('user_name') ?? '';
+      final currentDept = prefs.getString('user_department') ?? '';
+
+      // Helper: check if notification is explicitly for the current user
+      bool isForCurrentUser(Map m, String user) {
+        final ru = (m['recipient_username'] ??
+                m['recipient'] ??
+                m['to_user'] ??
+                m['assigned_to'] ??
+                m['assignee'])
+            ?.toString()
+            .trim()
+            .toLowerCase();
+        final uu = user.trim().toLowerCase();
+        return ru != null && ru.isNotEmpty && ru == uu;
+      }
+
+      // Helper: notification is for this user or for their department
+      bool isForCurrentUserOrDepartment(Map m, String user, String dept) {
+        if (isForCurrentUser(m, user)) {
+          return true;
+        }
+        final rd =
+            (m['recipient_department'] ?? m['recipient_dept'] ?? m['dept'])
+                ?.toString()
+                .trim()
+                .toUpperCase();
+        final ud = dept.trim().toUpperCase();
+        if (rd != null && rd.isNotEmpty && rd == ud) {
+          return true;
+        }
+        return false;
+      }
+
+      // 1) Prefer notifications API, then filter client-side for this user/department
+      List<Map<String, dynamic>> items = [];
+      bool success = false;
+      Uri notifUri = Uri.parse('$root/lib/OCR(UPDATED)/api/notifications.php')
+          .replace(queryParameters: {
+        'action': 'list',
+        'limit': '50',
+      });
+      try {
+        debugPrint('[RecentActivity] All-notifs -> $notifUri');
+        final r = await http.get(notifUri).timeout(const Duration(seconds: 10));
+        if (r.statusCode == 200 && r.body.isNotEmpty) {
+          final Map<String, dynamic> jm = jsonDecode(r.body);
+          final List listRaw =
+              (jm['notifications'] ?? jm['data'] ?? []) as List;
+          // Keep only items explicitly for this user or their department
+          final List list = listRaw
+              .whereType<Map>()
+              .where((m) =>
+                  isForCurrentUserOrDepartment(m, currentUser, currentDept))
+              .toList();
+          int? extractCreatedAtMs(Map m) {
+            dynamic v = m['created_at'] ??
+                m['createdAt'] ??
+                m['timestamp'] ??
+                m['time'];
+            if (v == null) return null;
+            try {
+              if (v is int) return v;
+              final s = v.toString().trim();
+              if (RegExp(r'^\d{10,13}$').hasMatch(s)) {
+                final n = int.tryParse(s);
+                if (n == null) return null;
+                return s.length >= 13 ? n : n * 1000;
+              }
+              final dt = DateTime.tryParse(s);
+              return dt?.millisecondsSinceEpoch;
+            } catch (_) {
+              return null;
+            }
+          }
+
+          items = list.take(10).map<Map<String, dynamic>>((e) {
+            final m = Map<String, dynamic>.from(e as Map);
+            final sender =
+                (m['sender_username'] ?? m['from_user'] ?? m['creator'])
+                        ?.toString() ??
+                    '';
+            final docType = (m['title'] ?? m['type'] ?? 'Document').toString();
+            final displayTitle =
+                sender.isNotEmpty ? '$docType from $sender' : docType;
+            return {
+              'title': displayTitle,
+              'subtitle':
+                  m['content']?.toString() ?? m['message']?.toString() ?? '',
+              'time': m['time_ago']?.toString() ??
+                  m['time']?.toString() ??
+                  m['created_at']?.toString() ??
+                  '',
+              'icon': Icons.description_outlined,
+              'id': m['id'],
+              'type': m['type']?.toString(),
+              'createdAtMs': extractCreatedAtMs(m),
+              'fileUrl':
+                  (m['file_url'] ?? m['url'] ?? m['attachment'] ?? m['link'])
+                      ?.toString(),
+              'sender': sender,
+              'recipientDepartment':
+                  (m['recipient_department'] ?? m['dept'])?.toString(),
+              'status': (m['status'] ?? 'new').toString(),
+            };
+          }).toList();
+          // Exclude self-sent items
+          // Show items even if created by the current user (e.g., department-targeted)
+          // Do not exclude self-sent items here.
+          success = items.isNotEmpty || list.isNotEmpty;
+
+          // Fetch department-targeted notifications and merge
+          if (currentDept.isNotEmpty) {
+            final deptUri =
+                Uri.parse('$root/lib/OCR(UPDATED)/api/notifications.php')
+                    .replace(queryParameters: {
+              'action': 'list',
+              'limit': '20',
+              'recipient_department': currentDept,
+            });
+            try {
+              debugPrint('[RecentActivity] Dept -> $deptUri');
+              final rd =
+                  await http.get(deptUri).timeout(const Duration(seconds: 10));
+              if (rd.statusCode == 200 && rd.body.isNotEmpty) {
+                final Map<String, dynamic> jm = jsonDecode(rd.body);
+                final List listD =
+                    (jm['notifications'] ?? jm['data'] ?? []) as List;
+                final deptItems = listD.take(10).map<Map<String, dynamic>>((e) {
+                  final m = Map<String, dynamic>.from(e as Map);
+                  final sender =
+                      (m['sender_username'] ?? m['from_user'] ?? m['creator'])
+                              ?.toString() ??
+                          '';
+                  final docType =
+                      (m['title'] ?? m['type'] ?? 'Document').toString();
+                  final displayTitle =
+                      sender.isNotEmpty ? '$docType from $sender' : docType;
+                  return {
+                    'title': displayTitle,
+                    'subtitle': m['content']?.toString() ??
+                        m['message']?.toString() ??
+                        '',
+                    'time': m['time_ago']?.toString() ??
+                        m['time']?.toString() ??
+                        m['created_at']?.toString() ??
+                        '',
+                    'icon': Icons.description_outlined,
+                    'id': m['id'],
+                    'type': m['type']?.toString(),
+                    'createdAtMs': extractCreatedAtMs(m),
+                    'fileUrl': (m['file_url'] ??
+                            m['url'] ??
+                            m['attachment'] ??
+                            m['link'])
+                        ?.toString(),
+                    'sender': sender,
+                    'recipientDepartment':
+                        (m['recipient_department'] ?? m['dept'])?.toString(),
+                    'status': (m['status'] ?? 'new').toString(),
+                  };
+                }).toList();
+                // Merge & dedupe by id (do not exclude self-sent department items)
+                final Map<String, Map<String, dynamic>> mapById = {
+                  for (final it in items)
+                    (it['id']?.toString() ?? '${it['title']}_${it['time']}'): it
+                };
+                for (final it in deptItems) {
+                  final key =
+                      it['id']?.toString() ?? '${it['title']}_${it['time']}';
+                  mapById[key] = it;
+                }
+                items = mapById.values.toList();
+                // Sort newest first
+                items.sort((a, b) => (b['createdAtMs'] as int? ?? 0)
+                    .compareTo(a['createdAtMs'] as int? ?? 0));
+              }
+            } catch (_) {}
+          }
+          // If empty, retry without type filter to avoid mismatch
+          if (!success) {
+            final notifUri2 =
+                Uri.parse('$root/lib/OCR(UPDATED)/api/notifications.php')
+                    .replace(queryParameters: {
+              'action': 'list',
+              'limit': '20',
+              'recipient_username': currentUser,
+            });
+            debugPrint('[RecentActivity] Retry -> $notifUri2');
+            final r2 =
+                await http.get(notifUri2).timeout(const Duration(seconds: 10));
+            if (r2.statusCode == 200 && r2.body.isNotEmpty) {
+              final Map<String, dynamic> jm2 = jsonDecode(r2.body);
+              final List list2 =
+                  (jm2['notifications'] ?? jm2['data'] ?? []) as List;
+              items = list2.take(10).map<Map<String, dynamic>>((e) {
+                final m = Map<String, dynamic>.from(e as Map);
+                final sender =
+                    (m['sender_username'] ?? m['from_user'] ?? m['creator'])
+                            ?.toString() ??
+                        '';
+                final docType =
+                    (m['title'] ?? m['type'] ?? 'Document').toString();
+                final displayTitle =
+                    sender.isNotEmpty ? '$docType from $sender' : docType;
+                return {
+                  'title': displayTitle,
+                  'subtitle': m['content']?.toString() ??
+                      m['message']?.toString() ??
+                      '',
+                  'time': m['time_ago']?.toString() ??
+                      m['time']?.toString() ??
+                      m['created_at']?.toString() ??
+                      '',
+                  'icon': Icons.description_outlined,
+                  'id': m['id'],
+                  'type': m['type']?.toString(),
+                  'createdAtMs': extractCreatedAtMs(m),
+                  'fileUrl': (m['file_url'] ??
+                          m['url'] ??
+                          m['attachment'] ??
+                          m['link'])
+                      ?.toString(),
+                  'sender': sender,
+                };
+              }).toList();
+              items = items
+                  .where((m) =>
+                      (m['sender']?.toString().toLowerCase() ?? '') !=
+                      currentUser.toLowerCase())
+                  .toList();
+              success = items.isNotEmpty || list2.isNotEmpty;
+            }
+          }
+        }
+      } catch (_) {}
+
+      // 2) Fallback: New lightweight endpoint: api/recent_activity.php (filtered client-side)
+      final simpleUri = Uri.parse('$root/api/recent_activity.php')
+          .replace(queryParameters: {'limit': '20'});
+      http.Response resp;
+      try {
+        debugPrint('[RecentActivity] GET -> $simpleUri');
+        resp = await http.get(simpleUri).timeout(const Duration(seconds: 10));
+        debugPrint('[RecentActivity] status: ${resp.statusCode}');
+      } catch (_) {
+        resp = http.Response('', 599);
+      }
+      int? extractCreatedAtMs(Map m) {
+        dynamic v =
+            m['created_at'] ?? m['createdAt'] ?? m['timestamp'] ?? m['time'];
+        if (v == null) return null;
+        try {
+          if (v is int) return v;
+          final s = v.toString().trim();
+          // numeric seconds or ms
+          if (RegExp(r'^\d{10,13}$').hasMatch(s)) {
+            final n = int.tryParse(s);
+            if (n == null) return null;
+            return s.length >= 13 ? n : n * 1000;
+          }
+          final dt = DateTime.tryParse(s);
+          return dt?.millisecondsSinceEpoch;
+        } catch (_) {
+          return null;
+        }
+      }
+
+      if (!success && resp.statusCode == 200 && resp.body.isNotEmpty) {
+        try {
+          final jsonMap = jsonDecode(resp.body) as Map<String, dynamic>;
+          final List listRaw =
+              (jsonMap['notifications'] ?? jsonMap['data'] ?? []) as List;
+          final List list = listRaw
+              .whereType<Map>()
+              .where((m) =>
+                  isForCurrentUserOrDepartment(m, currentUser, currentDept))
+              .toList();
+          items = list.take(10).map<Map<String, dynamic>>((e) {
+            final m = Map<String, dynamic>.from(e as Map);
+            final activity = {
+              'title': m['title']?.toString() ?? 'Activity',
+              'subtitle':
+                  m['content']?.toString() ?? m['message']?.toString() ?? '',
+              'time': m['time_ago']?.toString() ??
+                  m['time']?.toString() ??
+                  m['created_at']?.toString() ??
+                  '',
+              'icon': _iconForType(m['type']?.toString()),
+              'id': m['id'],
+              'type': m['type']?.toString(),
+              'createdAtMs': extractCreatedAtMs(m),
+            };
+            return _decorateActivityWithIdentity(activity, m);
+          }).toList();
+          success = items.isNotEmpty || (list.isNotEmpty);
+        } catch (_) {}
+      }
+
+      // 2b) Direct user-targeted list from notifications API (recipient_username)
+      if (!success) {
+        final userUri =
+            Uri.parse('$root/lib/OCR(UPDATED)/api/notifications.php')
+                .replace(queryParameters: {
+          'action': 'list',
+          'limit': '20',
+          'recipient_username': currentUser,
+        });
+        try {
+          debugPrint('[RecentActivity] User -> $userUri');
+          final ru =
+              await http.get(userUri).timeout(const Duration(seconds: 10));
+          if (ru.statusCode == 200 && ru.body.isNotEmpty) {
+            final Map<String, dynamic> jm = jsonDecode(ru.body);
+            final List list = (jm['notifications'] ?? jm['data'] ?? []) as List;
+            items = list.take(20).map<Map<String, dynamic>>((e) {
+              final m = Map<String, dynamic>.from(e as Map);
+              final activity = {
+                'title': m['title']?.toString() ?? 'Activity',
+                'subtitle':
+                    m['content']?.toString() ?? m['message']?.toString() ?? '',
+                'time': m['time_ago']?.toString() ??
+                    m['time']?.toString() ??
+                    m['created_at']?.toString() ??
+                    '',
+                'icon': _iconForType(m['type']?.toString()),
+                'id': m['id'],
+                'type': m['type']?.toString(),
+                'createdAtMs': extractCreatedAtMs(m),
+                'fileUrl':
+                    (m['file_url'] ?? m['url'] ?? m['attachment'] ?? m['link'])
+                        ?.toString(),
+                'sender':
+                    (m['sender_username'] ?? m['from_user'] ?? m['creator'])
+                        ?.toString(),
+                'recipientDepartment':
+                    (m['recipient_department'] ?? m['dept'])?.toString(),
+                'status': (m['status'] ?? 'new').toString(),
+              };
+              return _decorateActivityWithIdentity(activity, m);
+            }).toList();
+            success = items.isNotEmpty || list.isNotEmpty;
+          }
+        } catch (_) {}
+      }
+
+      // 3) Try the original notifications API under lib/OCR(UPDATED) if needed (filtered client-side)
+      if (!success) {
+        final notificationsUri =
+            Uri.parse('$root/lib/OCR(UPDATED)/api/notifications.php')
+                .replace(queryParameters: {'action': 'list', 'limit': '20'});
+        try {
+          debugPrint('[RecentActivity] Legacy -> $notificationsUri');
+          final r2 = await http
+              .get(notificationsUri)
+              .timeout(const Duration(seconds: 10));
+          if (r2.statusCode == 200 && r2.body.isNotEmpty) {
+            final jsonMap = jsonDecode(r2.body) as Map<String, dynamic>;
+            final List listRaw =
+                (jsonMap['notifications'] ?? jsonMap['data'] ?? []) as List;
+            final List list = listRaw
+                .whereType<Map>()
+                .where((m) =>
+                    isForCurrentUserOrDepartment(m, currentUser, currentDept))
+                .toList();
+            items = list.take(10).map<Map<String, dynamic>>((e) {
+              final m = Map<String, dynamic>.from(e as Map);
+              final activity = {
+                'title': m['title']?.toString() ?? 'Activity',
+                'subtitle':
+                    m['content']?.toString() ?? m['message']?.toString() ?? '',
+                'time': m['time_ago']?.toString() ??
+                    m['time']?.toString() ??
+                    m['created_at']?.toString() ??
+                    '',
+                'icon': _iconForType(m['type']?.toString()),
+                'id': m['id'],
+                'type': m['type']?.toString(),
+                'createdAtMs': extractCreatedAtMs(m),
+                'fileUrl':
+                    (m['file_url'] ?? m['url'] ?? m['attachment'] ?? m['link'])
+                        ?.toString(),
+                'sender':
+                    (m['sender_username'] ?? m['from_user'] ?? m['creator'])
+                        ?.toString(),
+              };
+              return _decorateActivityWithIdentity(activity, m);
+            }).toList();
+            success = items.isNotEmpty || (list.isNotEmpty);
+          }
+        } catch (_) {}
+      }
+
+      // 4) Final fallback to tracking.php?action=notifications (filtered client-side)
+      if (!success) {
+        final fallbackUri = Uri.parse('$root/lib/OCR(UPDATED)/tracking.php')
+            .replace(queryParameters: {
+          'action': 'notifications',
+          'page': '1',
+          'limit': '20',
+        });
+        try {
+          debugPrint('[RecentActivity] Fallback -> $fallbackUri');
+          final r2 =
+              await http.get(fallbackUri).timeout(const Duration(seconds: 10));
+          debugPrint('[RecentActivity] Fallback status: ${r2.statusCode}');
+          if (r2.statusCode == 200) {
+            final jsonMap = jsonDecode(r2.body) as Map<String, dynamic>;
+            final List listRaw = (jsonMap['notifications'] ?? []) as List;
+            final List list = listRaw
+                .whereType<Map>()
+                .where((m) => isForCurrentUser(m, currentUser))
+                .toList();
+            items = list.take(10).map<Map<String, dynamic>>((e) {
+              final m = Map<String, dynamic>.from(e as Map);
+              final activity = {
+                'title': m['title']?.toString() ?? 'Activity',
+                'subtitle': m['content']?.toString() ?? '',
+                'time': m['time']?.toString() ?? '',
+                'icon': _iconForType(m['type']?.toString()),
+                'id': m['id'],
+                'type': m['type']?.toString(),
+                'createdAtMs': extractCreatedAtMs(m),
+                'fileUrl':
+                    (m['file_url'] ?? m['url'] ?? m['attachment'] ?? m['link'])
+                        ?.toString(),
+                'sender':
+                    (m['sender_username'] ?? m['from_user'] ?? m['creator'])
+                        ?.toString(),
+              };
+              return _decorateActivityWithIdentity(activity, m);
+            }).toList();
+          }
+        } catch (_) {}
+      }
+
+      // No generic fallback: we now merge user + department; if still empty, show empty state.
+
+      // Notify on new items compared to last seen
+      final newestMs = items
+          .map<int?>((m) => m['createdAtMs'] as int?)
+          .whereType<int>()
+          .fold<int>(0, (p, c) => c > p ? c : p);
+      final prefs2 = await SharedPreferences.getInstance();
+      final key = 'last_seen_activity_ms_${currentUser.toLowerCase()}';
+      final prev = _lastSeenActivityMs ?? prefs2.getInt(key);
+      // We still track last seen timestamp, but no longer show a SnackBar/banner.
+      if (prev != null && newestMs > prev) {
+        // Intentionally no UI banner here per request.
+      }
+      _lastSeenActivityMs = newestMs == 0 ? _lastSeenActivityMs : newestMs;
+      await prefs2.setInt(key, _lastSeenActivityMs ?? 0);
+      if (mounted) {
+        setState(() {
+          // Merge with existing Firestore items instead of clearing
+          final Map<String, Map<String, dynamic>> activityMap = {};
+
+          // Keep existing Firestore items (those with fs_id)
+          for (final item in _recentActivity) {
+            final key = item['fs_id']?.toString() ??
+                item['id']?.toString() ??
+                '${item['title']}_${item['time']}';
+            // Only keep Firestore items, we'll merge PHP notifications below
+            if (item['fs_id'] != null) {
+              activityMap[key] = item;
+            }
+          }
+
+          // Add/Update PHP notification items
+          for (final item in items) {
+            final key =
+                item['id']?.toString() ?? '${item['title']}_${item['time']}';
+            // Don't overwrite Firestore items with PHP items if they have the same ID
+            if (!activityMap.containsKey(key) ||
+                activityMap[key]!['fs_id'] == null) {
+              activityMap[key] = item;
+            }
+          }
+
+          _recentActivity.clear();
+          _recentActivity.addAll(activityMap.values);
+
+          // Sort by creation time (newest first)
+          _recentActivity.sort((a, b) {
+            final aMs = a['createdAtMs'] as int? ?? 0;
+            final bMs = b['createdAtMs'] as int? ?? 0;
+            if (aMs == 0 && bMs == 0) return 0;
+            return bMs.compareTo(aMs);
+          });
+
+          _lastActivityRefresh =
+              TimeOfDay.fromDateTime(DateTime.now()).format(context);
+
+          debugPrint(
+              '[Dashboard] Activity refreshed: ${_recentActivity.length} items');
+        });
+      }
+    } catch (_) {
+      // silent fail to avoid UI disruption
+    }
+  }
+
+  IconData _iconForType(String? t) {
+    switch (t) {
+      case 'upload':
+        return Icons.upload_file;
+      case 'document_upload':
+        return Icons.description_outlined;
+      case 'approval':
+        return Icons.approval;
+      case 'approval_required':
+        return Icons.rule_folder_outlined;
+      case 'comment':
+        return Icons.comment;
+      case 'archive':
+        return Icons.archive;
+      case 'system_update':
+        return Icons.system_update_alt;
+      default:
+        return Icons.notifications;
+    }
+  }
+
+  Widget _buildKPITiles() {
+    if (_kpiData.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: GridView.builder(
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 2,
+          crossAxisSpacing: 10,
+          mainAxisSpacing: 10,
+          // Make tiles taller to avoid bottom overflow on small screens
+          childAspectRatio: 1.1,
+        ),
+        itemCount: _kpiData.length,
+        itemBuilder: (context, index) {
+          final kpi = _kpiData[index];
+          return _buildKPITile(
+            title: kpi['title'],
+            count: kpi['count'],
+            icon: kpi['icon'],
+            color: kpi['color'],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildKPITile({
+    required String title,
+    required int count,
+    required IconData icon,
+    required Color color,
+  }) {
+    return Material(
+      color: Theme.of(context).cardColor,
+      borderRadius: BorderRadius.circular(16),
+      elevation: 2,
+      child: InkWell(
+        onTap: () {
+          // Navigate to filtered view
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Viewing $title documents')),
+          );
+        },
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.1),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(icon, color: color, size: 24),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                count.toString(),
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  color: color,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                title,
+                style: TextStyle(
+                  fontSize: 11,
+                  color:
+                      Theme.of(context).colorScheme.onSurface.withOpacity(0.7),
+                  fontWeight: FontWeight.w500,
+                ),
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSectionHeader(String title, {VoidCallback? onTap}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              title,
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w800,
+                color: Theme.of(context).colorScheme.onSurface.withOpacity(0.9),
+              ),
+            ),
+          ),
+          if (title == 'Recent Activity' && _lastActivityRefresh != null)
+            Padding(
+              padding: const EdgeInsets.only(right: 8.0),
+              child: Text(
+                'Updated ${_lastActivityRefresh!}',
+                style: TextStyle(
+                  fontSize: 12,
+                  color:
+                      Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                ),
+              ),
+            ),
+          if (onTap != null)
+            TextButton(onPressed: onTap, child: const Text('See All')),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildRecentActivityFeed() {
+    // Show only first 3 items, rest available via "See All"
+    final displayItems = _getReceivedActivityItems().take(3).toList();
+
+    if (displayItems.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  decoration: BoxDecoration(
+                    color: Colors.blue.shade50,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  padding: const EdgeInsets.all(10),
+                  child: Icon(Icons.notifications_none,
+                      color: Colors.blue.shade700),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'No recent activity',
+                    style: TextStyle(
+                        fontSize: 14,
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withOpacity(0.6)),
+                  ),
+                ),
+                TextButton(
+                  onPressed: _fetchRecentActivity,
+                  child: const Text('Refresh'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      );
+    }
+
+    return ListView.separated(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      itemCount: displayItems.length,
+      separatorBuilder: (context, index) => const Divider(height: 1),
+      itemBuilder: (context, index) {
+        final activity = displayItems[index];
+        return _buildActivityItem(
+          title: activity['title'],
+          subtitle: activity['subtitle'],
+          time: activity['time'],
+          icon: activity['icon'],
+          onTap: () => _showActivityDetails(activity),
+          onLongPress: () => _confirmDeleteActivity(activity),
+          fileUrl: (activity['fileUrl'] ?? '').toString(),
+          id: activity['id'] is int
+              ? activity['id'] as int
+              : int.tryParse('${activity['id']}'),
+          status: (activity['status'] ?? '').toString(),
+          recipientDepartment:
+              (activity['recipientDepartment'] ?? '').toString(),
+          fsId: (activity['fs_id'] ?? '').toString(),
+          docType: (activity['type'] ?? '').toString(),
+          mobileTimestamp: activity['mobileTimestamp']?.toString(),
+          docHash: activity['docHash']?.toString(),
+          trackingId: activity['trackingId']?.toString(),
+          storedFilePath: activity['filePath']?.toString(),
+          isEncrypted: _isActivityEncrypted(activity),
+        );
+      },
+    );
+  }
+
+  // Check if activity item is encrypted (payroll document)
+  bool _isActivityEncrypted(Map<String, dynamic> activity) {
+    try {
+      final title = (activity['title'] ?? '').toString().toLowerCase();
+      final docType = (activity['type'] ?? '').toString().toLowerCase();
+      final subtitle = (activity['subtitle'] ?? '').toString().toLowerCase();
+
+      // Check for encryption metadata in title or type
+      if (title.contains('encrypted') || docType.contains('encrypted')) {
+        return true;
+      }
+
+      // Check for payroll keywords
+      final encryptionService = EncryptionService.instance;
+      return encryptionService.isPayrollDocument(title, subtitle);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  Widget _buildActivityItem({
+    required String title,
+    required String subtitle,
+    required String time,
+    required IconData icon,
+    required VoidCallback onTap,
+    VoidCallback? onLongPress,
+    String? fileUrl,
+    int? id,
+    String? status,
+    String? recipientDepartment,
+    String? fsId,
+    String? docType,
+    String? mobileTimestamp,
+    String? docHash,
+    String? trackingId,
+    String? storedFilePath,
+    bool isEncrypted = false,
+  }) {
+    String? _normalize(String? value) {
+      if (value == null) return null;
+      final trimmed = value.trim();
+      return trimmed.isEmpty ? null : trimmed;
+    }
+
+    final resolvedFilePath =
+        _normalize(storedFilePath) ?? _normalize(fileUrl) ?? '';
+    final normalizedMobileTimestamp = _normalize(mobileTimestamp);
+    final normalizedDocHash = _normalize(docHash);
+    final normalizedTrackingId = _normalize(trackingId);
+
+    // Ensure identities for this item are cached (route button might rely on cache)
+    _rememberIdentityForActivity({
+      'trackingId': normalizedTrackingId,
+      'mobileTimestamp': normalizedMobileTimestamp,
+      'docHash': normalizedDocHash,
+      'filePath': resolvedFilePath,
+      'title': title,
+      'subtitle': subtitle,
+      'sender': recipientDepartment,
+    });
+
+    return Material(
+      color: Theme.of(context).cardColor,
+      child: InkWell(
+        onTap: onTap,
+        onLongPress: onLongPress,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 12),
+          constraints: const BoxConstraints(minHeight: 72),
+          child: Row(
+            children: [
+              Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(icon, color: Colors.blue.shade700, size: 24),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            title,
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                              color: Theme.of(context).colorScheme.onSurface,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (isEncrypted) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.green.shade600,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.lock, size: 10, color: Colors.white),
+                                const SizedBox(width: 2),
+                                Text(
+                                  'Encrypted',
+                                  style: TextStyle(
+                                    fontSize: 9,
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      subtitle,
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withOpacity(0.7),
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    if ((recipientDepartment != null &&
+                            recipientDepartment.isNotEmpty) &&
+                        (status == null || status != 'confirmed')) ...[
+                      const SizedBox(height: 6),
+                      LayoutBuilder(
+                        builder: (ctx, constraints) {
+                          final ButtonStyle outlinedRoute =
+                              OutlinedButton.styleFrom(
+                            minimumSize: const Size(0, 40),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 8),
+                            foregroundColor: Colors.green.shade700,
+                            side: BorderSide(color: Colors.green.shade700),
+                          );
+                          final ButtonStyle outlinedOpen =
+                              OutlinedButton.styleFrom(
+                            minimumSize: const Size(0, 40),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 8),
+                            foregroundColor: Colors.blue.shade700,
+                            side: BorderSide(color: Colors.blue.shade700),
+                          );
+                          final ButtonStyle elevatedConfirm =
+                              ElevatedButton.styleFrom(
+                            minimumSize: const Size(0, 40),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 8),
+                            backgroundColor: Colors.red.shade600,
+                            foregroundColor: Colors.white,
+                          );
+
+                          final hasOpen = resolvedFilePath.isNotEmpty ||
+                              (docType == 'mobile_message' &&
+                                  recipientDepartment.isNotEmpty);
+
+                          return Row(
+                            children: [
+                              // Route (first)
+                              Expanded(
+                                child: OutlinedButton(
+                                  onPressed: () async {
+                                    await Navigator.push(
+                                      context,
+                                      MaterialPageRoute(
+                                        builder: (_) => const CameraPage(),
+                                      ),
+                                    );
+                                  },
+                                  style: outlinedRoute,
+                                  child: const Text('Route'),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              // Open (second)
+                              if (hasOpen)
+                                Expanded(
+                                  child: OutlinedButton(
+                                    onPressed: () {
+                                      if (docType == 'mobile_message' &&
+                                          recipientDepartment.isNotEmpty) {
+                                        _openAllenDocumentDetail(
+                                          subtitle: subtitle,
+                                          recipientDepartment:
+                                              recipientDepartment,
+                                          fileUrl: resolvedFilePath,
+                                        );
+                                      } else {
+                                        _openActivityFileOrPreview(
+                                          fileUrl: resolvedFilePath,
+                                          fileName: subtitle,
+                                          recipientDepartment:
+                                              recipientDepartment,
+                                          isEncrypted: isEncrypted,
+                                        );
+                                      }
+                                    },
+                                    style: outlinedOpen,
+                                    child: const Text('Open'),
+                                  ),
+                                )
+                              else
+                                const SizedBox.shrink(),
+                              const SizedBox(width: 8),
+                              // Confirm (third)
+                              Expanded(
+                                child: ElevatedButton(
+                                  onPressed: () async {
+                                    // 1) Save this document into local Archive
+                                    await _archiveActivityFile(
+                                      fileUrl: resolvedFilePath,
+                                      displayName:
+                                          _deriveDocType(subtitle, docType),
+                                    );
+
+                                    // 2) Mark notification as confirmed, then delete it
+                                    if (id != null) {
+                                      await _updateNotificationStatus(
+                                          id, 'confirmed');
+                                    }
+
+                                    // 3) Refresh the list so UI updates
+                                    if (mounted) {
+                                      await _fetchRecentActivity();
+                                    }
+                                  },
+                                  style: elevatedConfirm,
+                                  child: const Text('Delete'),
+                                ),
+                              ),
+                            ],
+                          );
+                        },
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              Text(
+                time,
+                style: TextStyle(
+                  fontSize: 12,
+                  color:
+                      Theme.of(context).colorScheme.onSurface.withOpacity(0.6),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openUrl(String url) async {
+    try {
+      String u = url.trim();
+      if (u.isEmpty) throw 'Empty link';
+
+      // 1) http/https links -> open directly
+      if (u.startsWith('http://') || u.startsWith('https://')) {
+        final uri = Uri.parse(u);
+        final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+        if (!ok && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Could not open link')));
+        }
+        return;
+      }
+
+      // 2) If looks like a server-relative path (starts with '/') -> prefix server root
+      if (u.startsWith('/')) {
+        final root = await _getServerRoot();
+        if (root != null) {
+          // Avoid duplicating the project segment if u already contains it
+          String seg = u;
+          const proj = '/flutter_application_7';
+          if (seg.startsWith(proj)) {
+            seg =
+                seg.substring(proj.length); // keep leading slash removal result
+            if (!seg.startsWith('/')) seg = '/$seg';
+          }
+          final httpUrl = '$root$seg';
+          final uri = Uri.parse(httpUrl);
+          final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+          if (!ok && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Could not open link')));
+          }
+          return;
+        }
+      }
+
+      // 2b) Relative path without leading slash like 'Archive/CTO/...' -> prefix with root
+      if (!u.contains('://')) {
+        final root = await _getServerRoot();
+        if (root != null) {
+          // If this came from an Android app-internal path, try to extract the archive segment
+          final appIdx = u.indexOf('/app_flutter/');
+          String suffix = u;
+          if (appIdx != -1) {
+            final pos = appIdx + '/app_flutter/'.length;
+            if (pos < u.length) suffix = u.substring(pos);
+          }
+
+          if (!suffix.startsWith('/')) suffix = '/$suffix';
+          final httpUrl = '$root$suffix';
+          final uri = Uri.parse(httpUrl);
+          final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+          if (!ok && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Could not open link')));
+          }
+          return;
+        }
+      }
+
+      // 3) Local file path -> try to open via file://
+      final file = File(u);
+      if (await file.exists()) {
+        final uri = Uri.file(file.path);
+        final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+        if (!ok && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('No app available to open this file')));
+        }
+        return;
+      }
+
+      // 4) Last resort: attempt to treat as URL
+      final uri = Uri.parse(u);
+      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!ok && mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Could not open link')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Invalid link: $e')));
+      }
+    }
+  }
+
+  Future<void> _updateNotificationStatus(int id, String status) async {
+    try {
+      final root = await _getServerRoot();
+      if (root == null) return;
+      final uri = Uri.parse('$root/lib/OCR(UPDATED)/api/notifications.php')
+          .replace(queryParameters: {
+        'action': 'update_status',
+        'id': id.toString(),
+        'status': status,
+      });
+      final r = await http.post(uri).timeout(const Duration(seconds: 8));
+      if (r.statusCode < 400) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('Updated: $status')));
+          await _fetchRecentActivity();
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Update failed (${r.statusCode})')));
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Network error: $e')));
+      }
+    }
+  }
+
+  Widget _buildProfileContent({required double bottomPad}) {
+    return ListView(
+      padding: EdgeInsets.only(left: 16, right: 16, top: 16, bottom: bottomPad),
+      children: [
+        Center(
+          child: CircleAvatar(
+            radius: 50,
+            backgroundColor: Colors.blue.shade100,
+            child: Icon(Icons.person, size: 60, color: Colors.blue.shade700),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Center(
+          child: Text(
+            username,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+        const SizedBox(height: 32),
+        _buildProfileOption(Icons.person_outline, 'View Profile', () {
+          _openViewProfileDialog();
+        }),
+        _buildProfileOption(Icons.cloud_upload_outlined, 'History', () async {
+          final historyItems = _getUserHistoryItems();
+          final changed = await Navigator.push<bool>(
+            context,
+            MaterialPageRoute(
+              builder: (_) => RecentUploadPage(
+                items: List<Map<String, dynamic>>.from(historyItems),
+                title: 'History',
+              ),
+            ),
+          );
+          if (changed == true) {
+            await _fetchRecentActivity();
+          }
+        }),
+        _buildProfileOption(Icons.logout, 'Logout', () {
+          _confirmLogout();
+        }, isDestructive: true),
+      ],
+    );
+  }
+
+  Widget _buildProfileOption(IconData icon, String title, VoidCallback onTap,
+      {bool isDestructive = false}) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ListTile(
+        leading: Icon(icon,
+            color: isDestructive ? Colors.red : Colors.blue.shade700),
+        title: Text(
+          title,
+          style: TextStyle(
+            color: isDestructive
+                ? Colors.red
+                : Theme.of(context).colorScheme.onSurface,
+            fontWeight: isDestructive ? FontWeight.w600 : FontWeight.normal,
+          ),
+        ),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: onTap,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      ),
+    );
+  }
+
+  void _showSmallSheet(Widget child) {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (_) => Padding(
+        padding: const EdgeInsets.all(24),
+        child: Row(
+          children: [
+            const Icon(Icons.info_outline, color: Colors.blue, size: 28),
+            const SizedBox(width: 16),
+            Expanded(
+                child: DefaultTextStyle(
+              style: TextStyle(
+                  fontSize: 16, color: Theme.of(context).colorScheme.onSurface),
+              child: child,
+            )),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFAB() {
+    return GestureDetector(
+      onLongPress: () async {
+        try {
+          final picker = ImagePicker();
+          final XFile? file =
+              await picker.pickImage(source: ImageSource.gallery);
+          if (file == null || !mounted) return;
+          await Future.microtask(() {
+            if (!mounted) return;
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (context) => CameraPage(
+                  galleryImagePath: file.path,
+                ),
+              ),
+            );
+          });
+        } catch (e) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to open gallery: $e')),
+          );
+        }
+      },
+      child: FloatingActionButton(
+        heroTag: 'mainCameraFab',
+        onPressed: () {
+          Future.microtask(() {
+            if (!mounted) return;
+            Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (context) => const CameraPage(autoScan: true),
+              ),
+            );
+          });
+        },
+        backgroundColor: Colors.blue.shade700,
+        elevation: 10,
+        child: const Icon(Icons.camera_alt, size: 28, color: Colors.white),
+      ),
+    );
+  }
+
+  Widget _buildBottomNav() {
+    return BottomAppBar(
+      shape: const CircularNotchedRectangle(),
+      notchMargin: 8,
+      elevation: 8,
+      child: SizedBox(
+        height: 60,
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceAround,
+          children: [
+            _buildNavItem(
+                Icons.dashboard_outlined, Icons.dashboard, 'Dashboard', 0),
+            const SizedBox(width: 48), // Space for FAB
+            _buildNavItem(Icons.archive_outlined, Icons.archive, 'Archive', 1),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNavItem(
+      IconData icon, IconData activeIcon, String label, int index) {
+    final isActive = _currentIndex == index;
+    return Expanded(
+      child: InkWell(
+        onTap: () {
+          if (_currentIndex != index) {
+            _pageController.animateToPage(
+              index,
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+            );
+            HapticFeedback.selectionClick();
+          }
+        },
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              isActive ? activeIcon : icon,
+              color: isActive ? Colors.blue.shade700 : Colors.grey,
+              size: 26,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 11,
+                color: isActive ? Colors.blue.shade700 : Colors.grey,
+                fontWeight: isActive ? FontWeight.w600 : FontWeight.normal,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+extension _RecentUploadOpeners on _RecentUploadPageState {
+  Future<List<Map<String, dynamic>>> _fetchAllUsersRecent() async {
+    try {
+      final root = await _getServerRoot();
+      if (root == null) return [];
+      final uri =
+          Uri.parse('$root/lib/OCR(UPDATED)/api/list_control_entities.php');
+      final r = await http.get(uri).timeout(const Duration(seconds: 10));
+      if (r.statusCode >= 400 || r.body.isEmpty) return [];
+      final data = json.decode(r.body) as Map<String, dynamic>;
+      final List list = (data['users'] ?? []) as List;
+      return list.map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  Future<void> _updateNotificationStatus(int id, String status) async {
+    try {
+      final root = await _getServerRoot();
+      if (root == null) return;
+      final uri = Uri.parse('$root/lib/OCR(UPDATED)/api/notifications.php')
+          .replace(queryParameters: {'id': id.toString()});
+      try {
+        await http
+            .put(
+              uri,
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode({'status': status}),
+            )
+            .timeout(const Duration(seconds: 6));
+      } catch (_) {
+        try {
+          await http.post(uri, body: {
+            'action': 'update',
+            'id': id.toString(),
+            'status': status
+          }).timeout(const Duration(seconds: 6));
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  // Delete a notification on the server by ID. This mirrors the
+  // logic in NotificationPage._deleteOnServer but is scoped here
+  // so that Confirm actions can also clean up notifications.
+  Future<bool> _deleteNotificationById(int id) async {
+    try {
+      final root = await _getServerRoot();
+      if (root == null) return false;
+
+      final base = root;
+      final notifBase = '$base/lib/OCR(UPDATED)/api/notifications.php';
+
+      // 1) DELETE
+      try {
+        final resp = await http
+            .delete(Uri.parse('$notifBase?id=$id'))
+            .timeout(const Duration(seconds: 8));
+        if (resp.statusCode >= 200 && resp.statusCode < 300) return true;
+        try {
+          final data = jsonDecode(resp.body);
+          if (data is Map && (data['success'] == true)) return true;
+        } catch (_) {}
+      } catch (_) {}
+
+      // 2) POST action=delete
+      try {
+        final resp = await http.post(Uri.parse(notifBase), body: {
+          'action': 'delete',
+          'id': id.toString(),
+        }).timeout(const Duration(seconds: 8));
+        if (resp.statusCode >= 200 && resp.statusCode < 300) return true;
+        try {
+          final data = jsonDecode(resp.body);
+          if (data is Map && (data['success'] == true)) return true;
+        } catch (_) {}
+      } catch (_) {}
+
+      // 3) GET action=delete (fallback)
+      try {
+        final resp = await http
+            .get(Uri.parse('$notifBase?action=delete&id=$id'))
+            .timeout(const Duration(seconds: 8));
+        if (resp.statusCode >= 200 && resp.statusCode < 300) return true;
+        try {
+          final data = jsonDecode(resp.body);
+          if (data is Map && (data['success'] == true)) return true;
+        } catch (_) {}
+      } catch (_) {}
+
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _openRouteDialogWithDetails({
+    required String initialReceiverDept,
+    required String docType,
+    required String fileName,
+    required String filePath,
+    String? mobileTimestamp,
+    String? docHash,
+    String? trackingId,
+  }) async {
+    final unameCtrl = TextEditingController();
+    final deptCtrl = TextEditingController(text: initialReceiverDept);
+    final typeCtrl = TextEditingController(text: docType);
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) {
+        final mq = MediaQuery.of(ctx);
+        return Padding(
+          padding: EdgeInsets.only(
+            left: 16,
+            right: 16,
+            top: 16,
+            bottom: mq.viewInsets.bottom + 16,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'Route Document',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 10),
+              FutureBuilder<List<Map<String, dynamic>>>(
+                future: _fetchAllUsersRecent(),
+                builder: (c, snap) {
+                  final users = snap.data ?? [];
+                  if (snap.connectionState == ConnectionState.waiting) {
+                    return const LinearProgressIndicator(minHeight: 2);
+                  }
+
+                  // Build distinct list of departments from users
+                  final Set<String> depts = {
+                    for (final u in users)
+                      (u['department'] ?? '').toString().trim(),
+                  }..removeWhere((e) => e.isEmpty);
+
+                  void _selectDept(String deptName) {
+                    deptCtrl.text = deptName;
+                    final match = users.firstWhere(
+                      (u) =>
+                          (u['department'] ?? '').toString().trim() == deptName,
+                      orElse: () =>
+                          users.isNotEmpty ? users.first : <String, dynamic>{},
+                    );
+                    final uname = (match['user'] ?? '').toString();
+                    unameCtrl.text = uname;
+                  }
+
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      TextField(
+                        controller: unameCtrl,
+                        readOnly: true,
+                        decoration: const InputDecoration(
+                          labelText: 'Receiver Username (auto)',
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      DropdownButtonFormField<String>(
+                        value: depts.contains(deptCtrl.text)
+                            ? deptCtrl.text
+                            : null,
+                        items: depts
+                            .map(
+                              (d) => DropdownMenuItem<String>(
+                                value: d,
+                                child: Text(d.isNotEmpty ? d : 'Unknown'),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (v) {
+                          if (v == null) return;
+                          _selectDept(v);
+                        },
+                        decoration: const InputDecoration(
+                          labelText: 'Receiver Department',
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: typeCtrl,
+                readOnly: true,
+                decoration: const InputDecoration(labelText: 'Document Type'),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      child: const Text('Cancel'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: () async {
+                        Navigator.pop(ctx);
+                        await _routeDocument(
+                          receiverUsername: unameCtrl.text.trim(),
+                          receiverDepartment: deptCtrl.text.trim(),
+                          type: typeCtrl.text.trim().isNotEmpty
+                              ? typeCtrl.text.trim()
+                              : 'Document',
+                          fileName: fileName,
+                          filePath: filePath,
+                          mobileTimestamp: mobileTimestamp,
+                          docHash: docHash,
+                          trackingId: trackingId,
+                        );
+                      },
+                      child: const Text('Route'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _routeDocument({
+    required String receiverUsername,
+    required String receiverDepartment,
+    required String type,
+    required String fileName,
+    required String filePath,
+    String? mobileTimestamp,
+    String? docHash,
+    String? trackingId,
+  }) async {
+    try {
+      final root = await _getServerRoot();
+      if (root == null) return;
+      final prefs = await SharedPreferences.getInstance();
+      final sender = prefs.getString('user_name') ?? '';
+      final senderDept = prefs.getString('user_department') ?? '';
+      if (sender.isEmpty || senderDept.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Missing sender info. Re-login.')));
+        }
+        return;
+      }
+      if (receiverUsername.isEmpty && receiverDepartment.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Provide receiver username or department')));
+        }
+        return;
+      }
+
+      final uri = Uri.parse('$root/lib/OCR(UPDATED)/api/route_document.php');
+      final stableTs = (mobileTimestamp?.trim().isNotEmpty ?? false)
+          ? mobileTimestamp!.trim()
+          : DateTime.now().millisecondsSinceEpoch.toString();
+      final payload = {
+        'sender_name': sender,
+        'sender_department': senderDept,
+        'receiver_username': receiverUsername,
+        'receiver_department': receiverDepartment,
+        'type': type,
+        'file_name': fileName,
+        'file_path': filePath,
+        'mobile_timestamp': stableTs,
+        'base': root,
+      };
+      if (docHash?.trim().isNotEmpty ?? false) {
+        payload['doc_hash'] = docHash!.trim();
+      }
+      if (trackingId?.trim().isNotEmpty ?? false) {
+        payload['tracking_id'] = trackingId!.trim();
+      }
+      final r = await http
+          .post(uri, body: payload)
+          .timeout(const Duration(seconds: 12));
+      if (mounted) {
+        if (r.statusCode < 400) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('Routed')));
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text('Route failed (${r.statusCode}): ${r.body}')));
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Network error: $e')));
+      }
+    }
+  }
+
+  Future<void> _openFromActivity(Map<String, dynamic> activity) async {
+    final String? fileUrl = activity['fileUrl']?.toString();
+    final String subtitle = activity['subtitle']?.toString() ?? '';
+    final String? docType = activity['type']?.toString();
+    final String? recipientDepartment =
+        activity['recipientDepartment']?.toString();
+
+    // Check if document is encrypted
+    final bool isEncrypted = _isActivityEncrypted(activity);
+
+    if ((docType == 'mobile_message') &&
+        (recipientDepartment?.isNotEmpty ?? false)) {
+      await _openAllenDocumentDetail(
+        subtitle: subtitle.isNotEmpty
+            ? subtitle
+            : (activity['title']?.toString() ?? 'Document'),
+        recipientDepartment: recipientDepartment!,
+        fileUrl: fileUrl,
+      );
+      return;
+    }
+    await _openActivityFileOrPreview(
+      fileUrl: fileUrl,
+      fileName: subtitle.isNotEmpty
+          ? subtitle
+          : (activity['title']?.toString() ?? 'Document'),
+      recipientDepartment: recipientDepartment,
+      isEncrypted: isEncrypted,
+    );
+  }
+
+  Future<void> _openActivityFileOrPreview({
+    String? fileUrl,
+    String? fileName,
+    String? recipientDepartment,
+  }) async {
+    try {
+      String nameGuess = (fileName ?? '').trim();
+      if (nameGuess.contains('•')) {
+        final parts = nameGuess.split('•');
+        if (parts.length >= 2) nameGuess = parts.last.trim();
+      }
+      String urlGuess = (fileUrl ?? '').trim();
+      String ext = '';
+      final lower = nameGuess.toLowerCase();
+      final dot = lower.lastIndexOf('.');
+      if (dot != -1 && dot < lower.length - 1) ext = lower.substring(dot + 1);
+      if (ext.isEmpty && urlGuess.isNotEmpty) {
+        final lu = urlGuess.toLowerCase();
+        final d2 = lu.lastIndexOf('.');
+        if (d2 != -1 && d2 < lu.length - 1) ext = lu.substring(d2 + 1);
+      }
+      final isImage =
+          ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'].contains(ext);
+      final isPdf = ext == 'pdf';
+
+      if (urlGuess.isNotEmpty) {
+        final looksLocal = urlGuess.startsWith('file://') ||
+            urlGuess.startsWith('/data/') ||
+            urlGuess.contains('/app_flutter/');
+        if (looksLocal) {
+          final localPath = urlGuess.startsWith('file://')
+              ? Uri.parse(urlGuess).toFilePath()
+              : urlGuess;
+          final f = File(localPath);
+          if (await f.exists()) {
+            if (isImage) {
+              await _previewImage(localPath, title: nameGuess);
+            } else if (isPdf) {
+              await _openPdf(localPath,
+                  title: nameGuess.isNotEmpty ? nameGuess : 'Document');
+            } else {
+              final ok = await launchUrl(Uri.file(localPath),
+                  mode: LaunchMode.externalApplication);
+              if (!ok && mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content: Text('No app available to open this file')));
+              }
+            }
+            return;
+          }
+        } else {
+          if (isImage) {
+            await _previewImage(urlGuess, title: nameGuess);
+          } else if (isPdf) {
+            await _openPdf(urlGuess, title: nameGuess);
+          } else {
+            await _openUrl(urlGuess);
+          }
+          return;
+        }
+      }
+
+      final root = await _getServerRoot();
+      if (root == null) throw 'No server root';
+      final dept = (recipientDepartment ?? '').trim();
+      final name = nameGuess;
+      if (dept.isEmpty || name.isEmpty) throw 'Missing file info';
+      final namesToTry = <String>[name];
+      if (ext.isEmpty) {
+        namesToTry
+            .addAll(['$name.jpg', '$name.jpeg', '$name.png', '$name.pdf']);
+      }
+      final candidates = <String>[];
+      for (final n in namesToTry) {
+        final e = Uri.encodeComponent(n);
+        for (final v in [e, n]) {
+          candidates.addAll([
+            '$root/Archive/$dept/$v',
+            '$root/lib/Archive/$dept/$v',
+            '$root/lib/OCR(UPDATED)/Archive/$dept/$v',
+            '$root/uploads/$dept/$v',
+            '$root/Uploads/$dept/$v',
+            '$root/flutter_application_7/Archive/$dept/$v',
+          ]);
+        }
+      }
+      String? working;
+      for (final u in candidates) {
+        try {
+          final r =
+              await http.head(Uri.parse(u)).timeout(const Duration(seconds: 5));
+          if (r.statusCode < 400) {
+            working = u;
+            break;
+          }
+        } catch (_) {}
+      }
+      working ??= candidates.isNotEmpty ? candidates.first : null;
+      if (working == null) throw 'File not found';
+
+      final lw = working.toLowerCase();
+      if (lw.endsWith('.pdf')) {
+        await _openPdf(working, title: name);
+      } else {
+        await _previewImage(working, title: name);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Invalid link: $e')));
+    }
+  }
+
+  Future<void> _openAllenDocumentDetail({
+    required String subtitle,
+    required String recipientDepartment,
+    String? fileUrl,
+  }) async {
+    try {
+      String name = subtitle.trim();
+      if (name.contains('•')) {
+        final parts = name.split('•');
+        if (parts.length >= 2) name = parts.last.trim();
+      }
+      final root = await _getServerRoot();
+      if (root == null) throw 'No server root';
+      final dept = recipientDepartment.trim();
+      if (dept.isEmpty || name.isEmpty) throw 'Missing info';
+
+      String ext = '';
+      final i = name.lastIndexOf('.');
+      if (i != -1 && i < name.length - 1) {
+        ext = name.substring(i + 1).toLowerCase();
+      }
+      final names = <String>[name];
+      if (ext.isEmpty) {
+        names.addAll(['$name.jpg', '$name.jpeg', '$name.png', '$name.pdf']);
+      }
+      final paths = <String>[];
+      for (final n in names) {
+        final e = Uri.encodeComponent(n);
+        for (final v in [e, n]) {
+          paths.addAll([
+            '$root/Archive/$dept/$v',
+            '$root/lib/Archive/$dept/$v',
+            '$root/lib/OCR(UPDATED)/Archive/$dept/$v',
+            '$root/uploads/$dept/$v',
+            '$root/Uploads/$dept/$v',
+            '$root/flutter_application_7/Archive/$dept/$v',
+          ]);
+        }
+      }
+      String? imageOrPdf;
+      if (fileUrl != null && fileUrl.trim().isNotEmpty) {
+        try {
+          final r = await http
+              .head(Uri.parse(fileUrl))
+              .timeout(const Duration(seconds: 5));
+          if (r.statusCode < 400) {
+            imageOrPdf = fileUrl;
+          } else {
+            imageOrPdf = fileUrl;
+          }
+        } catch (_) {
+          imageOrPdf = fileUrl;
+        }
+      }
+      if (imageOrPdf == null) {
+        for (final u in paths) {
+          try {
+            final r = await http
+                .head(Uri.parse(u))
+                .timeout(const Duration(seconds: 5));
+            if (r.statusCode < 400) {
+              imageOrPdf = u;
+              break;
+            }
+          } catch (_) {}
+        }
+      }
+      imageOrPdf ??= paths.isNotEmpty ? paths.first : null;
+      if (imageOrPdf == null) throw 'Missing filename/path';
+
+      if (imageOrPdf.toLowerCase().endsWith('.pdf')) {
+        await _openPdf(imageOrPdf, title: name);
+        return;
+      }
+
+      String? ocrUrl;
+      try {
+        final uri = Uri.parse(imageOrPdf);
+        final p = uri.path.toLowerCase();
+        String txtCandidate;
+        if (p.endsWith('.jpg') || p.endsWith('.jpeg') || p.endsWith('.png')) {
+          txtCandidate = uri.toString().replaceAll(
+              RegExp(r'\.(jpg|jpeg|png)$', caseSensitive: false), '.txt');
+        } else {
+          final baseUrl = uri.toString();
+          final lastDot = baseUrl.lastIndexOf('.');
+          txtCandidate = lastDot != -1
+              ? ('${baseUrl.substring(0, lastDot)}.txt')
+              : ('$baseUrl.txt');
+        }
+        final head = await http
+            .head(Uri.parse(txtCandidate))
+            .timeout(const Duration(seconds: 4));
+        if (head.statusCode == 200) ocrUrl = txtCandidate;
+      } catch (_) {}
+
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => DashboardDocumentPreview(
+            title: name,
+            imageUrl: imageOrPdf!,
+            ocrUrl: ocrUrl,
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Open failed: $e')));
+    }
+  }
+
+  Future<void> _openPdf(String urlOrPath, {String? title}) async {
+    try {
+      String pathToOpen = urlOrPath;
+      if (urlOrPath.startsWith('http://') || urlOrPath.startsWith('https://')) {
+        final r = await http
+            .get(Uri.parse(urlOrPath))
+            .timeout(const Duration(seconds: 20));
+        if (r.statusCode >= 400) throw 'Download failed (${r.statusCode})';
+        final dir = await getTemporaryDirectory();
+        final name = title?.isNotEmpty == true
+            ? title!
+            : 'document_${DateTime.now().millisecondsSinceEpoch}.pdf';
+        final file = File('${dir.path}/$name');
+        await file.writeAsBytes(r.bodyBytes);
+        pathToOpen = file.path;
+      }
+      if (!await File(pathToOpen).exists()) throw 'File not found';
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => Scaffold(
+            appBar: AppBar(
+                title: Text(title?.isNotEmpty == true ? title! : 'Document')),
+            body: PDFView(
+              filePath: pathToOpen,
+              enableSwipe: true,
+              swipeHorizontal: true,
+              autoSpacing: true,
+              pageFling: true,
+            ),
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('PDF open error: $e')));
+    }
+  }
+
+  Future<void> _previewImage(String urlOrPath, {String? title}) async {
+    try {
+      final f = File(urlOrPath);
+      if (await f.exists()) {
+        if (!mounted) return;
+        await Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => Scaffold(
+              appBar: AppBar(
+                  title: Text(title?.isNotEmpty == true ? title! : 'Image')),
+              body: Center(
+                  child: InteractiveViewer(
+                      child: Image.file(f, fit: BoxFit.contain))),
+            ),
+          ),
+        );
+        return;
+      }
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => Scaffold(
+            appBar: AppBar(
+                title: Text(title?.isNotEmpty == true ? title! : 'Image')),
+            body: Center(
+              child: InteractiveViewer(
+                child: Image.network(
+                  urlOrPath,
+                  fit: BoxFit.contain,
+                  errorBuilder: (_, __, ___) =>
+                      const Icon(Icons.broken_image, size: 48),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Preview error: $e')));
+    }
+  }
+
+  Future<void> _openUrl(String url) async {
+    try {
+      String u = url.trim();
+      if (u.isEmpty) throw 'Empty link';
+      if (u.startsWith('http://') || u.startsWith('https://')) {
+        final uri = Uri.parse(u);
+        final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+        if (!ok && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Could not open link')));
+        }
+        return;
+      }
+      if (u.startsWith('/')) {
+        final root = await _getServerRoot();
+        if (root != null) {
+          String seg = u;
+          const proj = '/flutter_application_7';
+          if (seg.startsWith(proj)) {
+            seg = seg.substring(proj.length);
+            if (!seg.startsWith('/')) seg = '/$seg';
+          }
+          final httpUrl = '$root$seg';
+          final ok = await launchUrl(Uri.parse(httpUrl),
+              mode: LaunchMode.externalApplication);
+          if (!ok && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Could not open link')));
+          }
+          return;
+        }
+      }
+      final file = File(u);
+      if (await file.exists()) {
+        final ok = await launchUrl(Uri.file(file.path),
+            mode: LaunchMode.externalApplication);
+        if (!ok && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('No app available to open this file')));
+        }
+        return;
+      }
+      final ok =
+          await launchUrl(Uri.parse(u), mode: LaunchMode.externalApplication);
+      if (!ok && mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Could not open link')));
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Invalid link: $e')));
+    }
+  }
+
+  String _deriveDocType(String text, String? fallbackType) {
+    try {
+      String t = text.trim();
+      if (t.contains('•')) {
+        t = t.split('•').first.trim();
+      }
+      if (t.contains(' from ')) {
+        t = t.split(' from ').first.trim();
+      }
+      if (t.isNotEmpty) {
+        return t;
+      }
+      if (fallbackType != null && fallbackType.trim().isNotEmpty) {
+        return fallbackType.trim();
+      }
+      return 'Document';
+    } catch (_) {
+      return fallbackType?.trim().isNotEmpty == true
+          ? fallbackType!.trim()
+          : 'Document';
+    }
+  }
+
+  Future<void> _archiveActivityFile({
+    required String? fileUrl,
+    required String displayName,
+  }) async {
+    try {
+      final url = (fileUrl ?? '').trim();
+      if (url.isEmpty) return;
+
+      String resolved = url;
+      if (!resolved.contains('://')) {
+        final root = await _getServerRoot();
+        if (root == null) return;
+        if (resolved.startsWith('/')) {
+          resolved = '$root$resolved';
+        } else {
+          resolved = '$root/$resolved';
+        }
+      }
+
+      final resp = await http
+          .get(Uri.parse(resolved))
+          .timeout(const Duration(seconds: 15));
+      if (resp.statusCode >= 400) return;
+
+      final prefs = await SharedPreferences.getInstance();
+      final userDepartment = prefs.getString('user_department') ?? 'General';
+      final dir = await getApplicationDocumentsDirectory();
+      final archiveDir = Directory('${dir.path}/Archive/$userDepartment');
+      if (!await archiveDir.exists()) {
+        await archiveDir.create(recursive: true);
+      }
+
+      final now = DateTime.now().millisecondsSinceEpoch;
+      String ext = '';
+      final uriPath = Uri.parse(resolved).path;
+      final dot = uriPath.lastIndexOf('.');
+      if (dot != -1 && dot < uriPath.length - 1) {
+        ext = uriPath.substring(dot);
+      }
+      String prefix = 'IMG_';
+      if (ext.toLowerCase() == '.pdf') {
+        prefix = 'PDF_';
+      }
+      final fileName = '$prefix$now${ext.isNotEmpty ? ext : '.bin'}';
+      final outFile = File('${archiveDir.path}/$fileName');
+      await outFile.writeAsBytes(resp.bodyBytes, flush: true);
+
+      final metaPath = '${archiveDir.path}/OCR_$now.txt';
+      final metaFile = File(metaPath);
+      final typeLine = 'Document Type: $displayName';
+      final nameLine = 'Document Name: $displayName';
+      await metaFile.writeAsString('$typeLine\n$nameLine');
+    } catch (_) {}
+  }
+
+  // Check if activity item is encrypted (payroll document)
+  bool _isActivityEncrypted(Map<String, dynamic> activity) {
+    try {
+      final title = (activity['title'] ?? '').toString().toLowerCase();
+      final docType = (activity['type'] ?? '').toString().toLowerCase();
+      final subtitle = (activity['subtitle'] ?? '').toString().toLowerCase();
+
+      // Check for encryption metadata in title or type
+      if (title.contains('encrypted') || docType.contains('encrypted')) {
+        return true;
+      }
+
+      // Check for payroll keywords
+      final encryptionService = EncryptionService.instance;
+      return encryptionService.isPayrollDocument(title, subtitle);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Handle encrypted documents by decrypting them before opening
+  Future<void> _handleEncryptedDocument({
+    required String urlOrPath,
+    required String fileName,
+    required bool isImage,
+    required bool isPdf,
+  }) async {
+    try {
+      final encryptionService = EncryptionService.instance;
+
+      // Download the encrypted file
+      Uint8List encryptedData;
+      if (urlOrPath.startsWith('http://') || urlOrPath.startsWith('https://')) {
+        final response = await http
+            .get(Uri.parse(urlOrPath))
+            .timeout(const Duration(seconds: 20));
+        if (response.statusCode >= 400) {
+          throw 'Download failed (${response.statusCode})';
+        }
+        encryptedData = response.bodyBytes;
+      } else {
+        // Local file
+        final file = File(urlOrPath);
+        if (!await file.exists()) {
+          throw 'File not found: $urlOrPath';
+        }
+        encryptedData = await file.readAsBytes();
+      }
+
+      // Decrypt the file
+      final decryptedData =
+          await encryptionService.decryptPayrollDocument(encryptedData);
+
+      // Save decrypted file to temporary location
+      final tempDir = await getTemporaryDirectory();
+      final decryptedFileName =
+          'decrypted_${DateTime.now().millisecondsSinceEpoch}_$fileName';
+      final decryptedFile = File('${tempDir.path}/$decryptedFileName');
+      await decryptedFile.writeAsBytes(decryptedData);
+
+      // Open the decrypted file
+      if (isImage) {
+        await _previewImage(decryptedFile.path);
+      } else if (isPdf) {
+        await _openPdf(decryptedFile.path, title: fileName);
+      } else {
+        // For other file types, attempt external open
+        final ok = await launchUrl(Uri.file(decryptedFile.path),
+            mode: LaunchMode.externalApplication);
+        if (!ok && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No app available to open this file')),
+          );
+        }
+      }
+
+      // Clean up temporary file after a delay
+      Future.delayed(const Duration(minutes: 5), () async {
+        try {
+          if (await decryptedFile.exists()) {
+            await decryptedFile.delete();
+          }
+        } catch (e) {
+          debugPrint('Failed to cleanup temporary file: $e');
+        }
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to decrypt document: $e')),
+        );
+      }
+      debugPrint('❌ Decryption error: $e');
+    }
+  }
+}
+
+// Page that lists activity items passed in. Title can be customized
+// so that dashboard uses "Recent Activity" while profile uses "History".
+class RecentUploadPage extends StatefulWidget {
+  final List<Map<String, dynamic>> items;
+  final String title;
+
+  const RecentUploadPage({
+    super.key,
+    required this.items,
+    this.title = 'Recent Activity',
+  });
+
+  @override
+  State<RecentUploadPage> createState() => _RecentUploadPageState();
+}
+
+class _RecentUploadPageState extends State<RecentUploadPage> {
+  Timer? _ticker;
+  late List<Map<String, dynamic>> _items;
+  final Set<String> _deletedItemIds = {}; // Track deleted item IDs
+  static const String _deletedItemsKey = 'deleted_recent_upload_items';
+  bool _changed = false; // if true, caller should refresh dashboard
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDeletedItems().then((_) {
+      _updateItems();
+    });
+    // Rebuild every minute so time-ago stays fresh
+    _ticker = Timer.periodic(const Duration(minutes: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  // Load deleted item IDs from SharedPreferences
+  Future<void> _loadDeletedItems() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final deletedItems = prefs.getStringList(_deletedItemsKey) ?? [];
+      setState(() {
+        _deletedItemIds.addAll(deletedItems);
+      });
+    } catch (e) {
+      debugPrint('Error loading deleted items: $e');
+    }
+  }
+
+  // Save deleted item IDs to SharedPreferences
+  Future<void> _saveDeletedItems() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_deletedItemsKey, _deletedItemIds.toList());
+    } catch (e) {
+      debugPrint('Error saving deleted items: $e');
+    }
+  }
+
+  // Update items list, filtering out deleted items
+  void _updateItems() {
+    _items = widget.items
+        .where((item) => !_deletedItemIds.contains(item['id']?.toString()))
+        .toList();
+    // Save the updated list of deleted items
+    _saveDeletedItems();
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    // Save deleted items when the widget is disposed
+    _saveDeletedItems();
+    super.dispose();
+  }
+
+  String _timeAgoFromMs(int? createdAtMs, String fallback) {
+    if (createdAtMs == null) return fallback;
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final diffMs = now - createdAtMs;
+    if (diffMs < 0) return 'Just now';
+    final d = Duration(milliseconds: diffMs);
+    if (d.inSeconds < 60) return 'Just now';
+    if (d.inMinutes < 60) return '${d.inMinutes} min ago';
+    if (d.inHours < 24) return '${d.inHours} hr ago';
+    if (d.inDays < 7) return '${d.inDays} day${d.inDays == 1 ? '' : 's'} ago';
+    final dt = DateTime.fromMillisecondsSinceEpoch(createdAtMs);
+    final mm = dt.month.toString().padLeft(2, '0');
+    final dd = dt.day.toString().padLeft(2, '0');
+    return '$mm/$dd/${dt.year}';
+  }
+
+  Future<String?> _getServerRoot() async {
+    try {
+      final sp = await SharedPreferences.getInstance();
+      String? saved = sp.getString('server_root')?.trim();
+      saved ??= sp.getString('detected_server_url')?.trim();
+      if (saved == null || saved.isEmpty) return null;
+      if (saved.endsWith('/api')) saved = saved.substring(0, saved.length - 4);
+      return saved;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<bool> _deleteActivityPermanent(Map<String, dynamic> activity) async {
+    try {
+      final root = await _getServerRoot();
+      if (root == null) return false;
+      final id = activity['id']?.toString();
+      if (id == null || id.isEmpty) return false;
+
+      // 1) Primary: delete the underlying tracking/document entry (Recent Activity / Uploads)
+      final candidates = <Uri>[
+        Uri.parse('$root/lib/OCR(UPDATED)/tracking.php?delete_id=$id'),
+        Uri.parse('$root/../lib/OCR(UPDATED)/tracking.php?delete_id=$id'),
+      ];
+      for (final uri in candidates) {
+        try {
+          final r = await http.get(uri).timeout(const Duration(seconds: 8));
+          if (r.statusCode < 400) return true; // success or redirect
+        } catch (_) {}
+      }
+
+      try {
+        final uri = Uri.parse('$root/api/recent_activity.php')
+            .replace(queryParameters: {'action': 'delete', 'id': id});
+        final r = await http.post(uri).timeout(const Duration(seconds: 8));
+        if (r.statusCode < 400) return true;
+      } catch (_) {}
+
+      // 3) As a last resort, also attempt to delete the notification entry
+      // associated with this activity so the notification list stays in sync.
+      try {
+        final uri = Uri.parse('$root/lib/OCR(UPDATED)/api/notifications.php')
+            .replace(queryParameters: {'id': id});
+        final r = await http.delete(uri).timeout(const Duration(seconds: 8));
+        if (r.statusCode < 400) return true;
+      } catch (_) {}
+
+      try {
+        final uri = Uri.parse('$root/lib/OCR(UPDATED)/api/notifications.php');
+        final r = await http.post(uri, body: {
+          'action': 'delete',
+          'id': id
+        }).timeout(const Duration(seconds: 8));
+        if (r.statusCode < 400) return true;
+      } catch (_) {}
+    } catch (_) {}
+    return false;
+  }
+
+  Future<bool> _showDeleteConfirmation(
+      int index, Map<String, dynamic> activity) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Item'),
+        content: const Text(
+            'Are you sure you want to delete this item? This action cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: TextButton.styleFrom(
+              foregroundColor: Colors.red,
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true && mounted) {
+      final ok = await _deleteActivityPermanent(activity);
+      if (ok && mounted) {
+        setState(() {
+          _items.removeAt(index);
+        });
+        _changed = true;
+        if (!mounted) return true;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Item deleted permanently')),
+        );
+        return true;
+      } else {
+        if (!mounted) return false;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to delete. Please try again.')),
+        );
+        return false;
+      }
+    }
+    return false;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final items = _items;
+    return WillPopScope(
+      onWillPop: () async {
+        Navigator.pop(context, _changed);
+        return false;
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title:
+              Text(widget.title, style: const TextStyle(color: Colors.white)),
+          backgroundColor: Colors.blue.shade700,
+          foregroundColor: Colors.white,
+          elevation: 0,
+        ),
+        body: items.isEmpty
+            ? Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.upload_file_outlined,
+                        size: 64,
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withOpacity(0.4),
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        'No recent uploads',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w500,
+                          color: Theme.of(context).colorScheme.onSurface,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Your deleted items will appear here when you upload new files',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Theme.of(context)
+                              .colorScheme
+                              .onSurface
+                              .withOpacity(0.6),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+            : ListView.separated(
+                padding: const EdgeInsets.all(16),
+                itemCount: items.length,
+                separatorBuilder: (_, __) => Divider(
+                  height: 1,
+                  color: Theme.of(context).dividerColor,
+                ),
+                itemBuilder: (context, index) {
+                  final activity = items[index];
+                  final IconData icon = (activity['icon'] is IconData)
+                      ? activity['icon'] as IconData
+                      : Icons.description_outlined;
+                  final String title =
+                      activity['title']?.toString() ?? 'Upload';
+                  final String subtitle =
+                      activity['subtitle']?.toString() ?? '';
+                  final String timeFallback =
+                      activity['time']?.toString() ?? '';
+                  final String time = _timeAgoFromMs(
+                      activity['createdAtMs'] as int?, timeFallback);
+                  final String itemId =
+                      '${activity['id']}_${activity['title']}_$index';
+                  return Dismissible(
+                    key: Key(itemId),
+                    direction: DismissDirection.startToEnd,
+                    background: Container(
+                      alignment: Alignment.centerRight,
+                      padding: const EdgeInsets.only(right: 20),
+                      margin: const EdgeInsets.symmetric(vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade600,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Icon(Icons.delete, color: Colors.white),
+                    ),
+                    confirmDismiss: (direction) async {
+                      return await _showDeleteConfirmation(index, activity);
+                    },
+                    onDismissed: (direction) {},
+                    child: Material(
+                      color: Theme.of(context).cardColor,
+                      child: InkWell(
+                        onTap: () {
+                          _openFromActivity(activity);
+                        },
+                        onLongPress: () =>
+                            _showDeleteConfirmation(index, activity),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              vertical: 12, horizontal: 12),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 48,
+                                height: 48,
+                                decoration: BoxDecoration(
+                                  color: Colors.blue.shade50,
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Icon(icon,
+                                    color: Colors.blue.shade700, size: 24),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Text(
+                                      title,
+                                      style: TextStyle(
+                                        fontSize: 15,
+                                        fontWeight: FontWeight.w600,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onSurface,
+                                      ),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      subtitle,
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onSurface
+                                            .withOpacity(0.7),
+                                      ),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                    const SizedBox(height: 8),
+                                    Builder(builder: (ctx) {
+                                      final String? recipientDepartment =
+                                          activity['recipientDepartment']
+                                              ?.toString();
+                                      final String? fileUrl =
+                                          activity['fileUrl']?.toString();
+                                      final String? storedFilePath =
+                                          activity['filePath']?.toString();
+                                      final int? id = activity['id'] is int
+                                          ? activity['id'] as int
+                                          : int.tryParse(
+                                              activity['id']?.toString() ?? '');
+                                      final bool showActions =
+                                          (recipientDepartment?.isNotEmpty ??
+                                              false);
+                                      if (!showActions) {
+                                        return const SizedBox.shrink();
+                                      }
+                                      String? normalize(dynamic value) {
+                                        if (value == null) return null;
+                                        final str = value.toString().trim();
+                                        return str.isEmpty ? null : str;
+                                      }
+
+                                      final resolvedFilePath =
+                                          normalize(storedFilePath) ??
+                                              normalize(fileUrl) ??
+                                              '';
+                                      final normalizedMobileTimestamp =
+                                          normalize(
+                                              activity['mobileTimestamp']);
+                                      final normalizedDocHash =
+                                          normalize(activity['docHash']);
+                                      final normalizedTrackingId =
+                                          normalize(activity['trackingId']);
+                                      final ButtonStyle outlinedRoute =
+                                          OutlinedButton.styleFrom(
+                                        minimumSize: const Size(0, 40),
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 10, vertical: 8),
+                                        foregroundColor: Colors.green.shade700,
+                                        side: BorderSide(
+                                            color: Colors.green.shade700),
+                                      );
+                                      final ButtonStyle outlinedOpen =
+                                          OutlinedButton.styleFrom(
+                                        minimumSize: const Size(0, 40),
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 10, vertical: 8),
+                                        foregroundColor: Colors.blue.shade700,
+                                        side: BorderSide(
+                                            color: Colors.blue.shade700),
+                                      );
+                                      final ButtonStyle elevatedConfirm =
+                                          ElevatedButton.styleFrom(
+                                        minimumSize: const Size(0, 40),
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 10, vertical: 8),
+                                        backgroundColor: Colors.red.shade600,
+                                        foregroundColor: Colors.white,
+                                      );
+                                      return Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.stretch,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              Expanded(
+                                                child: OutlinedButton(
+                                                  onPressed: () async {
+                                                    await _openRouteDialogWithDetails(
+                                                      initialReceiverDept:
+                                                          recipientDepartment!,
+                                                      docType: activity[
+                                                                  'subtitle']
+                                                              ?.toString() ??
+                                                          activity['title']
+                                                              ?.toString() ??
+                                                          'Document',
+                                                      fileName: activity[
+                                                                  'subtitle']
+                                                              ?.toString() ??
+                                                          '',
+                                                      filePath:
+                                                          resolvedFilePath,
+                                                      mobileTimestamp:
+                                                          normalizedMobileTimestamp,
+                                                      docHash:
+                                                          normalizedDocHash,
+                                                      trackingId:
+                                                          normalizedTrackingId,
+                                                    );
+                                                    if (id != null) {
+                                                      await _updateNotificationStatus(
+                                                          id, 'routed');
+                                                    }
+                                                  },
+                                                  style: outlinedRoute,
+                                                  child: const Text('Route'),
+                                                ),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Expanded(
+                                                child: OutlinedButton(
+                                                  onPressed: () async {
+                                                    await _openFromActivity(
+                                                        activity);
+                                                  },
+                                                  style: outlinedOpen,
+                                                  child: const Text('Open'),
+                                                ),
+                                              ),
+                                              const SizedBox(width: 8),
+                                              Expanded(
+                                                child: ElevatedButton(
+                                                  onPressed: () async {
+                                                    // 1) Archive document into local gallery
+                                                    await _archiveActivityFile(
+                                                      fileUrl: fileUrl,
+                                                      displayName: _deriveDocType(
+                                                          activity['subtitle']
+                                                                  ?.toString() ??
+                                                              activity['title']
+                                                                  ?.toString() ??
+                                                              'Document',
+                                                          activity['title']
+                                                              ?.toString()),
+                                                    );
+
+                                                    // 2) Mark notification as confirmed, then delete it
+                                                    if (id != null) {
+                                                      await _updateNotificationStatus(
+                                                          id, 'confirmed');
+                                                      await _deleteNotificationById(
+                                                          id);
+                                                    }
+
+                                                    // 3) Delete the activity item so it no longer
+                                                    // appears in Recent Activity list, and notify caller
+                                                    final ok =
+                                                        await _deleteActivityPermanent(
+                                                            activity);
+                                                    if (ok && mounted) {
+                                                      setState(() {
+                                                        _items.removeAt(index);
+                                                      });
+                                                      _changed = true;
+                                                    }
+                                                  },
+                                                  style: elevatedConfirm,
+                                                  child: const Text('Delete'),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 6),
+                                          Text(
+                                            time,
+                                            style: TextStyle(
+                                              fontSize: 12,
+                                              color: Theme.of(context)
+                                                  .colorScheme
+                                                  .onSurface
+                                                  .withOpacity(0.6),
+                                            ),
+                                          ),
+                                        ],
+                                      );
+                                    }),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              if ((activity['recipientDepartment']
+                                      ?.toString()
+                                      .isEmpty ??
+                                  true))
+                                Text(
+                                  time,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurface
+                                        .withOpacity(0.6),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+      ),
+    );
+  }
+
+  // Handle encrypted documents by decrypting them before opening
+  Future<void> _handleEncryptedDocument({
+    required String urlOrPath,
+    required String fileName,
+    required bool isImage,
+    required bool isPdf,
+  }) async {
+    try {
+      final encryptionService = EncryptionService.instance;
+
+      // Download the encrypted file
+      Uint8List encryptedData;
+      if (urlOrPath.startsWith('http://') || urlOrPath.startsWith('https://')) {
+        final response = await http
+            .get(Uri.parse(urlOrPath))
+            .timeout(const Duration(seconds: 20));
+        if (response.statusCode >= 400) {
+          throw 'Download failed (${response.statusCode})';
+        }
+        encryptedData = response.bodyBytes;
+      } else {
+        // Local file
+        final file = File(urlOrPath);
+        if (!await file.exists()) {
+          throw 'File not found: $urlOrPath';
+        }
+        encryptedData = await file.readAsBytes();
+      }
+
+      // Decrypt the file
+      final decryptedData =
+          await encryptionService.decryptPayrollDocument(encryptedData);
+
+      // Save decrypted file to temporary location
+      final tempDir = await getTemporaryDirectory();
+      final decryptedFileName =
+          'decrypted_${DateTime.now().millisecondsSinceEpoch}_$fileName';
+      final decryptedFile = File('${tempDir.path}/$decryptedFileName');
+      await decryptedFile.writeAsBytes(decryptedData);
+
+      // Open the decrypted file
+      if (isImage) {
+        await _previewImage(decryptedFile.path);
+      } else if (isPdf) {
+        await _openPdf(decryptedFile.path, title: fileName);
+      } else {
+        // For other file types, attempt external open
+        final ok = await launchUrl(Uri.file(decryptedFile.path),
+            mode: LaunchMode.externalApplication);
+        if (!ok && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No app available to open this file')),
+          );
+        }
+      }
+
+      // Clean up temporary file after a delay
+      Future.delayed(const Duration(minutes: 5), () async {
+        try {
+          if (await decryptedFile.exists()) {
+            await decryptedFile.delete();
+          }
+        } catch (e) {
+          debugPrint('Failed to cleanup temporary file: $e');
+        }
+      });
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to decrypt document: $e')),
+        );
+      }
+      debugPrint('❌ Decryption error: $e');
+    }
+  }
+}

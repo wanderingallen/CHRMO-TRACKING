@@ -1,0 +1,32 @@
+allprojects {
+    repositories {
+        // Google Maven with explicit URL for better reliability
+        maven { 
+            url 'https://maven.google.com'
+            name 'Google'
+        }
+        google()
+        mavenCentral()
+        maven { url 'https://jitpack.io' }
+        maven { url 'https://maven.aliyun.com/repository/public' }
+    }
+}
+
+rootProject.buildDir = "../build"
+subprojects {
+    project.buildDir = "${rootProject.buildDir}/${project.name}"
+}
+subprojects {
+    project.evaluationDependsOn(":app")
+    if (project.name != "app") {
+        afterEvaluate {
+            if (project.hasProperty("android")) {
+                project.android.compileSdkVersion(36)
+            }
+        }
+    }
+}
+
+tasks.register("clean", Delete) {
+    delete rootProject.buildDir
+}

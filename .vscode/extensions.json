@@ -1,0 +1,52 @@
+{
+  "recommendations": [
+    // Flutter & Dart
+    "dart-code.dart",
+    "dart-code.flutter",
+    "alexisvt.flutter-snippets",
+    
+    // PHP
+    "bmewburn.vscode-intelephense-client",
+    "xdebug.php-debug",
+    "neilbrayfield.php-docblocker",
+    
+    // Python
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "njpwerner.autodocstring",
+    
+    // Database
+    "cweijan.vscode-mysql-client2",
+    "mtxr.sqltools",
+    "mtxr.sqltools-driver-mysql",
+    
+    // Code Quality
+    "esbenp.prettier-vscode",
+    "dbaeumer.vscode-eslint",
+    "junstyle.php-cs-fixer",
+    
+    // Frontend
+    "bradlc.vscode-tailwindcss",
+    "ecmel.vscode-html-css",
+    "ritwickdey.liveserver",
+    
+    // Git
+    "eamodio.gitlens",
+    "mhutchie.git-graph",
+    
+    // Productivity
+    "christian-kohler.path-intellisense",
+    "usernamehw.errorlens",
+    "streetsidesoftware.code-spell-checker",
+    "gruntfuggly.todo-tree",
+    
+    // Security
+    "sonarsource.sonarlint"
+  ],
+  "unwantedRecommendations": []
+}
+
+
+
+
+

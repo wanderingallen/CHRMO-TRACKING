@@ -1,0 +1,123 @@
+[
+    {
+        "id": "doc68332b566c61f",
+        "type": "wdawdasdw",
+        "employee": "wawdasdwq",
+        "date": "2025-05-25",
+        "holder": "dwadsadw",
+        "endLocation": "dwadsadw",
+        "status": "In Review",
+        "department": "dadswwad",
+        "fileTypeIcon": "image",
+        "filePath": "uploads\/file_68332b566c8f0_hr.png",
+        "fileHash": "75be3e7f3d13f5600184364df1265986d66d2424749b450af5f3d0f4b2966f31",
+        "extractedText": "This is extracted text from a document. It contains keywords like 'personnel', 'report', 'salary', 'contract'.",
+        "aiCategorizedType": "Personnel File",
+        "history": [
+            {
+                "user": "Guest User",
+                "action": "Document Registered",
+                "time": "2025-05-25 16:38 PM",
+                "status": "registered",
+                "notes": "New document added to the system."
+            },
+            {
+                "user": "System (AI)",
+                "action": "OCR Extraction & AI Categorization",
+                "time": "2025-05-25 16:38 PM",
+                "status": "processed",
+                "notes": "Document analyzed by AI. Categorized as: Personnel File"
+            },
+            {
+                "user": "Guest User",
+                "action": "Routed from dwadsadw to dwadsadw",
+                "notes": "wdadsdwada",
+                "time": "2025-05-25 16:45 PM",
+                "status": "routed"
+            }
+        ]
+    },
+    {
+        "id": "doc68332b7eacbe5",
+        "type": "dwadasdwad",
+        "employee": "dwadsdaw",
+        "date": "2025-05-25",
+        "holder": "dwadasda",
+        "endLocation": "dwadasda",
+        "status": "In Review",
+        "department": "dsadwadwa",
+        "fileTypeIcon": "word",
+        "filePath": "uploads\/file_68332b7eacc2e_Title_Recommendation (2).docx",
+        "fileHash": "85d92432a6f00486253bd8203a253c22dc0ed9618ba2e603666e3f0f80801a83",
+        "extractedText": "This is extracted text from a document. It contains keywords like 'personnel', 'report', 'salary', 'contract'.",
+        "aiCategorizedType": "Personnel File",
+        "history": [
+            {
+                "user": "Guest User",
+                "action": "Document Registered",
+                "time": "2025-05-25 16:38 PM",
+                "status": "registered",
+                "notes": "New document added to the system."
+            },
+            {
+                "user": "System (AI)",
+                "action": "OCR Extraction & AI Categorization",
+                "time": "2025-05-25 16:38 PM",
+                "status": "processed",
+                "notes": "Document analyzed by AI. Categorized as: Personnel File"
+            },
+            {
+                "user": "Guest User",
+                "action": "Routed from dwadasda to dwadasda",
+                "notes": "wdadsadw",
+                "time": "2025-05-25 16:39 PM",
+                "status": "routed"
+            },
+            {
+                "user": "Guest User",
+                "action": "Routed from dwadasda to dwadasda",
+                "notes": "dwwadsadw",
+                "time": "2025-05-25 16:40 PM",
+                "status": "routed"
+            },
+            {
+                "user": "Guest User",
+                "action": "Routed from dwadasda to dwadasda",
+                "notes": "wdasdawdwa",
+                "time": "2025-05-25 16:44 PM",
+                "status": "routed"
+            }
+        ]
+    },
+    {
+        "id": "doc68332bd9925f7",
+        "type": "dwasdw",
+        "employee": "dadswada",
+        "date": "2025-05-25",
+        "holder": "dawdasd",
+        "endLocation": "dwadawdsa",
+        "status": "Pending",
+        "department": "dwadasdaw",
+        "fileTypeIcon": "image",
+        "filePath": "uploads\/file_68332bd992683_dashborad.png",
+        "fileHash": "013d30e76351e0da4a535bd829bb5dbbb688420e09bd5687bf764d359510017a",
+        "extractedText": "This is extracted text from a document. It contains keywords like 'personnel', 'report', 'salary', 'contract'.",
+        "aiCategorizedType": "Personnel File",
+        "history": [
+            {
+                "user": "Guest User",
+                "action": "Document Registered",
+                "time": "2025-05-25 16:40 PM",
+                "status": "registered",
+                "notes": "New document added to the system."
+            },
+            {
+                "user": "System (AI)",
+                "action": "OCR Extraction & AI Categorization",
+                "time": "2025-05-25 16:40 PM",
+                "status": "processed",
+                "notes": "Document analyzed by AI. Categorized as: Personnel File"
+            }
+        ]
+    }
+]

@@ -1,0 +1,125 @@
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    display: flex;
+    height: 100vh;
+}
+
+.container {
+    display: flex;
+    width: 100%;
+}
+
+.left-section {
+    background-color: #f7f7f7;
+    padding: 40px;
+    width: 50%;
+}
+
+.right-section {
+    background-color: #ffffff;
+    padding: 40px;
+    width: 50%;
+}
+
+h1 {
+    font-size: 24px;
+}
+
+h2 {
+    font-size: 22px;
+}
+
+.documents {
+    display: flex;
+    flex-direction: column;
+    margin-top: 20px;
+}
+
+.doc-icon {
+    width: 50px;
+    height: 50px;
+    margin: 10px 0;
+}
+
+input[type="text"], input[type="password"] {
+    width: 100%;
+    padding: 10px;
+    margin: 10px 0;
+    border: 1px solid #ccc;
+}
+
+.remember {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.login-button {
+    background-color: #add8e6;
+    color: #000;
+    padding: 10px;
+    border: none;
+    cursor: pointer;
+    width: 100%;
+}
+
+.register-link {
+    color: #add8e6;
+}
+
+.board {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 15px; /* spacing between docs */
+    justify-content: center;
+}
+.input-field input {
+    font-size: 1rem;
+    padding: 12px;
+    border-radius: 10px;
+}
+.right-panel {
+    padding: 40px;
+}
+.login-button {
+    background-color: #007bff;
+    transition: background-color 0.3s ease;
+}
+.login-button:hover {
+    background-color: #0056b3;
+}
+@media (max-width: 768px) {
+    body {
+        flex-direction: column;
+    }
+    .left-panel, .right-panel {
+        width: 100%;
+        flex: none;
+        box-shadow: none;
+    }
+    .board {
+        justify-content: center;
+    }
+}
+.document {
+    border-radius: 10px;
+}
+input[type="text"], input[type="email"], input[type="password"] {
+    border-radius: 10px;
+}
+.terms {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+    margin-bottom: 20px;
+}
+body {
+    animation: fadeIn 0.6s ease-in;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}

@@ -1,0 +1,609 @@
+/* ============================================
+   CHRMO Document Tracking - Smooth Animations
+   Deployment-ready, optimized for performance
+   ============================================ */
+
+/* === CORE TRANSITIONS === */
+* {
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* === GLOBAL LOGOUT BUTTON (PILL) === */
+.btn-logout {
+  background: none !important;
+  border: 0 !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+  color: inherit !important;
+  text-decoration: none !important;
+  box-shadow: none !important;
+}
+.btn-logout:hover { background: none !important; box-shadow: none !important; }
+.btn-logout:active { transform: none !important; }
+.btn-logout i, .btn-logout .label { font-size: inherit; }
+
+/* === GHOST LOGOUT BUTTON (Clean Text Link) === */
+.logout-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: transparent !important;
+  color: #ef4444;
+  border: none !important;
+  padding: 8px 12px;
+  border-radius: 0;
+  text-decoration: none;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.2s ease;
+  box-shadow: none !important;
+}
+.logout-ghost:hover { 
+  background: transparent !important;
+  color: #dc2626;
+  border: none !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+.logout-ghost:active {
+  color: #b91c1c;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+.logout-ghost:focus { 
+  outline: none;
+  color: #dc2626;
+}
+.logout-ghost i { font-size: 0.95rem; }
+
+/* Override dropdown-item styles for logout */
+.dropdown-item.logout-item {
+  background: transparent !important;
+  border-bottom: none !important;
+  padding: 12px !important;
+}
+.dropdown-item.logout-item:hover {
+  background: transparent !important;
+  border-bottom: none !important;
+}
+
+/* Fallback styling removed to keep logout links as normal anchors */
+
+/* Smooth all interactive elements */
+button, a, input, select, textarea, .card, .btn, [role="button"] {
+  transition: all 0.2s ease;
+}
+
+/* === PAGE TRANSITIONS === */
+@keyframes pageEnter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.page-enter {
+  animation: pageEnter 0.55s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Smooth page exit fade */
+.page-exiting {
+  opacity: 0;
+  transition: opacity 0.35s ease;
+}
+
+/* === CARD ANIMATIONS === */
+@keyframes cardEnter {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.card-enter {
+  animation: cardEnter 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.card-stagger-1 { animation-delay: 0.05s; }
+.card-stagger-2 { animation-delay: 0.1s; }
+.card-stagger-3 { animation-delay: 0.15s; }
+.card-stagger-4 { animation-delay: 0.2s; }
+
+/* === HOVER EFFECTS === */
+.hover-lift {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.hover-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.12);
+}
+
+.hover-scale {
+  transition: transform 0.2s ease;
+}
+
+.hover-scale:hover {
+  transform: scale(1.02);
+}
+
+/* === BUTTON ANIMATIONS === */
+.btn-press {
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+
+.btn-press:active {
+  transform: scale(0.97);
+}
+
+.btn-ripple {
+  position: relative;
+  overflow: hidden;
+}
+
+.btn-ripple::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.5);
+  transform: translate(-50%, -50%);
+  transition: width 0.6s, height 0.6s;
+}
+
+.btn-ripple:active::after {
+  width: 300px;
+  height: 300px;
+}
+
+/* === INPUT FOCUS ANIMATIONS === */
+input:focus, select:focus, textarea:focus {
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.input-focus-lift:focus {
+  transform: translateY(-1px);
+}
+
+/* === MODAL ANIMATIONS === */
+@keyframes modalBackdrop {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modalSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px) scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.modal-backdrop {
+  animation: modalBackdrop 0.2s ease;
+}
+
+.modal-content-enter {
+  animation: modalSlideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* === TOAST/NOTIFICATION ANIMATIONS === */
+@keyframes toastSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes toastSlideOut {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+}
+
+.toast-enter {
+  animation: toastSlideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.toast-exit {
+  animation: toastSlideOut 0.25s ease;
+}
+
+/* === FADE ANIMATIONS === */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+.fade-in {
+  animation: fadeIn 0.3s ease;
+}
+
+.fade-out {
+  animation: fadeOut 0.25s ease;
+}
+
+/* === SLIDE ANIMATIONS === */
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideInLeft {
+  from {
+    opacity: 0;
+    transform: translateX(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.slide-in-right {
+  animation: slideInRight 0.3s ease;
+}
+
+.slide-in-left {
+  animation: slideInLeft 0.3s ease;
+}
+
+/* === SHAKE ANIMATION (for errors) === */
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-6px); }
+  50% { transform: translateX(6px); }
+  75% { transform: translateX(-6px); }
+}
+
+.shake {
+  animation: shake 0.3s ease;
+}
+
+/* === PULSE ANIMATION === */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+.pulse {
+  animation: pulse 2s ease infinite;
+}
+
+/* === SPINNER/LOADER === */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+/* === SKELETON LOADING === */
+@keyframes skeleton {
+  0% { background-position: -200px 0; }
+  100% { background-position: calc(200px + 100%) 0; }
+}
+
+.skeleton {
+  background: linear-gradient(90deg, #f0f0f0 0px, #f8f8f8 40px, #f0f0f0 80px);
+  background-size: 200px 100%;
+  animation: skeleton 1.2s ease-in-out infinite;
+}
+
+/* === BADGE BOUNCE === */
+@keyframes badgeBounce {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+}
+
+.badge-bounce {
+  animation: badgeBounce 0.5s ease;
+}
+
+/* === DROPDOWN ANIMATIONS === */
+@keyframes dropdownSlide {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.dropdown-enter {
+  animation: dropdownSlide 0.2s ease;
+}
+
+/* === TABLE ROW HOVER === */
+tr {
+  transition: background-color 0.15s ease, transform 0.15s ease;
+}
+
+tr:hover {
+  background-color: rgba(14, 165, 233, 0.04);
+}
+
+/* === SIDEBAR ANIMATIONS === */
+@keyframes sidebarSlide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.sidebar-enter {
+  animation: sidebarSlide 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Consistent sidebar hover across pages */
+.sidebar .menu-item {
+  transition: background-color 0.2s ease, border-left-color 0.2s ease, padding-left 0.2s ease;
+  position: relative;
+}
+.sidebar .menu-item:hover {
+  background-color: rgba(255, 255, 255, 0.1) !important;
+  border-left-color: #ffffff !important;
+}
+.sidebar .menu-item.active {
+  background-color: rgba(255, 255, 255, 0.1);
+  border-left-color: #ffffff;
+}
+.sidebar .menu-item::after {
+  content: none !important;
+  display: none !important;
+}
+.sidebar .menu-item:hover::after { opacity: 0 !important; }
+.sidebar .menu-item.active::after { opacity: 0 !important; }
+.sidebar:not(:hover) .menu-item:hover,
+.sidebar:not(:hover) .menu-item.active {
+  border-left-color: transparent;
+}
+.sidebar:not(:hover) .menu-item:hover::after { opacity: 0 !important; }
+
+/* === SIDEBAR OPEN ANIMATION (Smooth width and content shift) === */
+.sidebar {
+  transition: width 0.28s cubic-bezier(0.2, 0.8, 0.2, 1), background-color 0.2s ease;
+  will-change: width;
+}
+.main-content {
+  transition: margin-left 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+  will-change: margin-left;
+}
+.sidebar .menu-item span { transition: opacity 0.2s ease 0.06s; }
+.sidebar:hover .menu-item span { opacity: 1; }
+.sidebar:not(:hover) .menu-item span { opacity: 0; }
+
+/* === THEMED LOGOUT CONFIRM MODAL === */
+.logout-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.logout-modal-backdrop.show { opacity: 1; }
+.logout-modal {
+  background: var(--white, #ffffff);
+  border-radius: 14px;
+  width: 92%;
+  max-width: 420px;
+  box-shadow: 0 10px 28px rgba(0,0,0,0.12);
+  overflow: hidden;
+  transform: translateY(12px) scale(0.98);
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.logout-modal-header {
+  background: linear-gradient(to right, var(--primary-dark, #0e7490), var(--secondary, #06b6d4));
+  color: #fff;
+  padding: 14px 18px;
+  font-weight: 700;
+}
+.logout-modal-body { padding: 16px 18px; color: var(--text-dark, #263238); }
+.logout-modal-actions {
+  padding: 14px 18px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  background: var(--light-bg, #F5F7FA);
+}
+.btn-cancel {
+  background: #e2e8f0;
+  color: #1f2937;
+  border: 1px solid #cbd5e1;
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-weight: 600;
+}
+.btn-cancel:hover { background: #cbd5e1; }
+.btn-logout-confirm {
+  background: #ef4444;
+  color: #fff;
+  border: 1px solid #e11d48;
+  padding: 8px 14px;
+  border-radius: 10px;
+  font-weight: 700;
+}
+.btn-logout-confirm:hover { background: #dc2626; }
+
+/* === PROGRESS BAR === */
+@keyframes progressBar {
+  from { width: 0%; }
+  to { width: 100%; }
+}
+
+.progress-animate {
+  animation: progressBar 0.8s ease;
+}
+
+/* === FLOATING LABEL SMOOTH === */
+.floating-label {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* === ICON ANIMATIONS === */
+.icon-rotate {
+  transition: transform 0.3s ease;
+}
+
+.icon-rotate:hover {
+  transform: rotate(15deg);
+}
+
+.icon-bounce:hover {
+  animation: badgeBounce 0.5s ease;
+}
+
+/* === STAGGER UTILITIES === */
+.stagger-50 { animation-delay: 0.05s; }
+.stagger-100 { animation-delay: 0.1s; }
+.stagger-150 { animation-delay: 0.15s; }
+.stagger-200 { animation-delay: 0.2s; }
+.stagger-250 { animation-delay: 0.25s; }
+.stagger-300 { animation-delay: 0.3s; }
+
+/* === SMOOTH SCROLL === */
+html {
+  scroll-behavior: smooth;
+}
+
+/* === REDUCE MOTION (Accessibility) === */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* === PERFORMANCE OPTIMIZATIONS === */
+.will-animate {
+  will-change: transform, opacity;
+}
+
+/* Remove will-change after animation */
+.animated {
+  will-change: auto;
+}
+
+/* GPU-accelerated layer promotion for smooth animations */
+.sidebar,
+.menu-item,
+.main-content,
+.card,
+.stat-card,
+.dropdown-menu,
+.modal,
+.toast {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+/* Sidebar hover optimizations - prevent layout thrashing */
+.sidebar {
+  contain: layout style;
+  isolation: isolate;
+}
+
+.sidebar .menu-item {
+  contain: layout;
+}
+
+/* Reduce paint complexity during transitions */
+.main-content {
+  contain: layout style paint;
+}
+
+/* Optimize icon rendering */
+.fas, .far, .fab, .fa {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* Prevent text jitter during sidebar expand */
+.sidebar-header h2,
+.menu-item span {
+  transform: translateZ(0);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* === LINK UNDERLINE ANIMATION === */
+.link-underline {
+  position: relative;
+}
+
+.link-underline::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  left: 0;
+  width: 0;
+  height: 2px;
+  background: currentColor;
+  transition: width 0.3s ease;
+}
+
+.link-underline:hover::after {
+  width: 100%;
+}
+
+/* === GLOW EFFECT === */
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 5px rgba(14, 165, 233, 0.5); }
+  50% { box-shadow: 0 0 20px rgba(14, 165, 233, 0.8); }
+}
+
+.glow-pulse {
+  animation: glow 2s ease infinite;
+}

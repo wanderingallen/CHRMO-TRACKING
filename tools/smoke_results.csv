@@ -1,0 +1,13 @@
+﻿url,iteration,time_total_seconds
+http://localhost/flutter_application_7/phpinfo.php,1,0.00526
+http://localhost/flutter_application_7/phpinfo.php,2,0.006442
+http://localhost/flutter_application_7/phpinfo.php,3,0.005754
+http://localhost/flutter_application_7/phpinfo.php,4,0.002457
+http://localhost/flutter_application_7/phpinfo.php,5,0.002408
+http://localhost/flutter_application_7/phpinfo.php,6,0.002541
+http://localhost/flutter_application_7/,1,0.015931
+http://localhost/flutter_application_7/,2,0.008084
+http://localhost/flutter_application_7/,3,0.009428
+http://localhost/flutter_application_7/,4,0.009409
+http://localhost/flutter_application_7/,5,0.009257
+http://localhost/flutter_application_7/,6,0.009448

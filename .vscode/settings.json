@@ -1,0 +1,127 @@
+{
+    "cmake.sourceDirectory": "D:/xampp/htdocs/flutter_application_7/linux",
+    
+    // PHP Settings
+    "php.suggest.basic": false,
+    "intelephense.files.maxSize": 5000000,
+    "intelephense.files.associations": [
+        "*.php"
+    ],
+    "intelephense.environment.phpVersion": "8.1.0",
+    
+    // Python Settings
+    "python.linting.enabled": true,
+    "python.linting.pylintEnabled": true,
+    "python.formatting.provider": "black",
+    "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.autoImportCompletions": true,
+    
+    // Dart/Flutter Settings
+    "dart.lineLength": 80,
+    "dart.enableSdkFormatter": true,
+    "dart.flutterSdkPath": null,
+    "dart.debugExternalPackageLibraries": false,
+    "dart.debugSdkLibraries": false,
+    
+    // Editor Settings
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+        "source.fixAll": "explicit",
+        "source.organizeImports": "explicit"
+    },
+    "editor.tabSize": 4,
+    "editor.insertSpaces": true,
+    "[dart]": {
+        "editor.tabSize": 2,
+        "editor.insertSpaces": true,
+        "editor.formatOnSave": true
+    },
+    "[php]": {
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true,
+        "editor.formatOnSave": true
+    },
+    "[python]": {
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true,
+        "editor.formatOnSave": true
+    },
+    "[javascript]": {
+        "editor.tabSize": 2,
+        "editor.insertSpaces": true
+    },
+    "[html]": {
+        "editor.tabSize": 2,
+        "editor.insertSpaces": true
+    },
+    "[css]": {
+        "editor.tabSize": 2,
+        "editor.insertSpaces": true
+    },
+    
+    // File Associations
+    "files.associations": {
+        "*.php": "php",
+        "*.dart": "dart",
+        "*.py": "python"
+    },
+    
+    // Files to Exclude
+    "files.exclude": {
+        "**/.git": true,
+        "**/.DS_Store": true,
+        "**/node_modules": true,
+        "**/build": true,
+        "**/.dart_tool": true,
+        "**/ai_env": true,
+        "**/vendor": false,
+        "**/*.log": true
+    },
+    
+    // Search Exclude
+    "search.exclude": {
+        "**/node_modules": true,
+        "**/build": true,
+        "**/.dart_tool": true,
+        "**/ai_env": true,
+        "**/vendor": false,
+        "**/*.log": true
+    },
+    
+    // Tailwind CSS Settings
+    "tailwindCSS.experimental.classRegex": [
+        ["class:\\s*?[\"'`]([^\"'`]*).*?[\"'`]", "([^\\s]*)"]
+    ],
+    "tailwindCSS.includeLanguages": {
+        "php": "html"
+    },
+    
+    // Git Settings
+    "git.enableSmartCommit": true,
+    "git.confirmSync": false,
+    
+    // Terminal Settings
+    "terminal.integrated.defaultProfile.windows": "PowerShell",
+    
+    // Error Lens Settings
+    "errorLens.enabled": true,
+    "errorLens.enabledDiagnosticLevels": ["error", "warning"],
+    
+    // Spell Checker
+    "cSpell.enabled": true,
+    "cSpell.language": "en",
+    "cSpell.words": [
+        "CHRMO",
+        "chrmo",
+        "Intelephense",
+        "pubspec",
+        "PHPMailer",
+        "Firestore",
+        "Tesseract",
+        "pytesseract",
+        "opencv",
+        "scikit",
+        "Flutter",
+        "XAMPP"
+    ]
+}
