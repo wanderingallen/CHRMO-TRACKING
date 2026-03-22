@@ -5,12 +5,21 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
-/// Centralized HTTP helper with retry, timeout, and error handling.
+/// A simple cache entry with expiration.
+class _CacheEntry {
+  final http.Response response;
+  final DateTime expiresAt;
+  _CacheEntry(this.response, this.expiresAt);
+  bool get isExpired => DateTime.now().isAfter(expiresAt);
+}
+
+/// Centralized HTTP helper with retry, timeout, caching, and error handling.
 ///
 /// Usage:
 /// ```dart
 /// final data = await HttpService.getJson(url);
 /// final resp = await HttpService.postJson(url, body: {...});
+/// final cached = await HttpService.getJson(url, cacheTtl: Duration(seconds: 60));
 /// ```
 class HttpService {
   // ── Default timeouts ──
@@ -21,22 +30,58 @@ class HttpService {
   // ── Retry config ──
   static const int maxRetries = 3;
 
-  /// GET request with automatic retry and timeout.
+  // ── In-memory response cache ──
+  static final Map<String, _CacheEntry> _cache = {};
+  static const Duration _defaultCacheTtl = Duration(seconds: 30);
+
+  /// Clear all cached responses.
+  static void clearCache() => _cache.clear();
+
+  /// Clear cached responses matching a specific URL path pattern.
+  static void clearCacheFor(String pathContains) {
+    _cache.removeWhere((key, _) => key.contains(pathContains));
+  }
+
+  /// GET request with automatic retry, timeout, and optional caching.
+  ///
+  /// Set [cacheTtl] to cache the response for the specified duration.
+  /// Pass `Duration.zero` to skip caching. Default is 30 seconds.
   static Future<http.Response> get(
     Uri url, {
     Map<String, String>? headers,
     Duration? timeout,
     int retries = maxRetries,
+    Duration? cacheTtl,
   }) async {
-    return _withRetry(
+    final cacheKey = url.toString();
+    final ttl = cacheTtl ?? _defaultCacheTtl;
+
+    // Return cached response if still valid
+    if (ttl > Duration.zero) {
+      final cached = _cache[cacheKey];
+      if (cached != null && !cached.isExpired) {
+        debugPrint('[HttpService] Cache HIT: ${url.path}');
+        return cached.response;
+      }
+    }
+
+    final response = await _withRetry(
       retries: retries,
       label: 'GET ${url.path}',
       action: () =>
           http.get(url, headers: headers).timeout(timeout ?? readTimeout),
     );
+
+    // Cache successful responses
+    if (ttl > Duration.zero && response.statusCode == 200) {
+      _cache[cacheKey] = _CacheEntry(response, DateTime.now().add(ttl));
+    }
+
+    return response;
   }
 
   /// POST request with automatic retry and timeout.
+  /// Invalidates any cached GET response for the same path.
   static Future<http.Response> post(
     Uri url, {
     Map<String, String>? headers,
@@ -44,6 +89,9 @@ class HttpService {
     Duration? timeout,
     int retries = maxRetries,
   }) async {
+    // Invalidate any cached GET response for this path
+    _cache.removeWhere((key, _) => key.contains(url.path));
+
     return _withRetry(
       retries: retries,
       label: 'POST ${url.path}',
@@ -53,17 +101,21 @@ class HttpService {
     );
   }
 
-  /// Convenience: GET and parse JSON response.
+  /// Convenience: GET and parse JSON response with caching.
   /// Returns null if the response is not valid JSON or request fails after retries.
   static Future<Map<String, dynamic>?> getJson(
     Uri url, {
     Map<String, String>? headers,
     Duration? timeout,
     int retries = maxRetries,
+    Duration? cacheTtl,
   }) async {
     try {
-      final resp =
-          await get(url, headers: headers, timeout: timeout, retries: retries);
+      final resp = await get(url,
+          headers: headers,
+          timeout: timeout,
+          retries: retries,
+          cacheTtl: cacheTtl);
       if (resp.statusCode == 200) {
         return jsonDecode(resp.body) as Map<String, dynamic>;
       }

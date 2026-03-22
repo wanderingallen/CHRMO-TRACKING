@@ -2137,6 +2137,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     // Get logged-in user's name from SharedPreferences
     final prefs = await SharedPreferences.getInstance();
     String documentName = prefs.getString('user_name') ?? 'User';
+    final String userDepartment =
+        prefs.getString('user_department')?.toUpperCase() ?? '';
 
     // Auto-select AI-suggested document type if confidence is high enough
     String selectedDocumentType = 'Payroll';
@@ -2144,118 +2146,203 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       selectedDocumentType = _aiClassification!.type.displayName;
     }
 
+    // ── Routing state (merged from _showUploadToTrackingModal) ──
+    var allDepartments = await _fetchDepartmentsForMobile();
+    if (allDepartments.isEmpty) {
+      allDepartments = [
+        'CPDO', 'GSO', 'CBO', 'CTO', 'CACCO', 'CADO', 'CMO', 'HR',
+      ];
+    }
+    final availableDepartments =
+        allDepartments.where((d) => d.toUpperCase() != userDepartment).toList();
+    final departments =
+        availableDepartments.isNotEmpty ? availableDepartments : allDepartments;
+
+    String selectedDepartment =
+        departments.isNotEmpty ? departments.first : '';
+    String selectedEndLocation =
+        departments.isNotEmpty ? departments.first : '';
+
+    // Payroll fixed route
+    final List<String> payrollRoute = ['HR', 'CBO', 'ACCOUNTING', 'CAO', 'CTO'];
+    bool useCustomRoute = false;
+
+    // Multi-send state
+    bool isMultiSendMode = false;
+    Set<String> selectedDepartments = {};
+
     showDialog(
       context: context,
-      builder: (BuildContext context) {
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) {
         return StatefulBuilder(
           builder: (context, setState) {
+            // Derived routing flags based on current document type
+            final bool supportsMultiSend =
+                ['Memo', 'Announcement'].contains(selectedDocumentType);
+            final bool isPayrollFixedRoute =
+                selectedDocumentType.toLowerCase() == 'payroll';
+            final int payrollUploaderIndex = payrollRoute
+                .indexWhere((d) => d.toUpperCase() == userDepartment);
+            final String payrollFixedNextDepartment =
+                payrollUploaderIndex >= 0
+                    ? (payrollUploaderIndex < payrollRoute.length - 1
+                        ? payrollRoute[payrollUploaderIndex + 1]
+                        : payrollRoute.last)
+                    : payrollRoute.first;
+
+            // Reset multi-send when type changes
+            if (!supportsMultiSend && isMultiSendMode) {
+              isMultiSendMode = false;
+              selectedDepartments.clear();
+            }
+
             return AlertDialog(
               scrollable: true,
-              title: const Row(
+              insetPadding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20),
+              ),
+              title: Row(
                 children: [
-                  Icon(Icons.description, color: Color(0xFF6868AC)),
-                  SizedBox(width: 8),
-                  Text('Complete Scan'),
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF6868AC).withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.check_circle_outline,
+                        color: Color(0xFF6868AC), size: 24),
+                  ),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Complete & Route',
+                            style: TextStyle(
+                                fontSize: 18, fontWeight: FontWeight.bold)),
+                        Text('Save document and send to department',
+                            style: TextStyle(
+                                fontSize: 12, color: Colors.grey)),
+                      ],
+                    ),
+                  ),
+                  // Close button
+                  Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      onTap: () => Navigator.of(dialogContext).pop(),
+                      borderRadius: BorderRadius.circular(20),
+                      child: Container(
+                        padding: const EdgeInsets.all(6),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade200,
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(Icons.close,
+                            size: 18, color: Colors.grey.shade600),
+                      ),
+                    ),
+                  ),
                 ],
               ),
               content: ConstrainedBox(
                 constraints: BoxConstraints(
-                  maxHeight: MediaQuery.of(context).size.height * 0.6,
+                  maxHeight: MediaQuery.of(context).size.height * 0.75,
+                  maxWidth: MediaQuery.of(context).size.width * 0.9,
                 ),
                 child: SingleChildScrollView(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // AI Document Type Suggestion Banner
+                      // ═══════════════════════════════════════════
+                      // SECTION 1: Document Information
+                      // ═══════════════════════════════════════════
+                      _buildSectionHeader(
+                        icon: Icons.description_outlined,
+                        label: 'Document Info',
+                        stepNumber: '1',
+                      ),
+                      const SizedBox(height: 10),
+
+                      // AI Document Type Suggestion
                       if (_aiClassification != null &&
                           _aiClassification!.confidence >= 0.15)
                         Container(
-                          margin: const EdgeInsets.only(bottom: 16),
-                          padding: const EdgeInsets.all(12),
+                          margin: const EdgeInsets.only(bottom: 12),
+                          padding: const EdgeInsets.all(10),
                           decoration: BoxDecoration(
                             color: _aiClassification!.confidenceColor
-                                .withOpacity(0.1),
+                                .withOpacity(0.08),
                             borderRadius: BorderRadius.circular(8),
                             border: Border.all(
                               color: _aiClassification!.confidenceColor
-                                  .withOpacity(0.5),
+                                  .withOpacity(0.3),
                             ),
                           ),
                           child: Row(
                             children: [
-                              Icon(
-                                Icons.auto_awesome,
-                                color: _aiClassification!.confidenceColor,
-                                size: 20,
-                              ),
+                              Icon(Icons.auto_awesome,
+                                  color: _aiClassification!.confidenceColor,
+                                  size: 18),
                               const SizedBox(width: 8),
                               Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      'AI Suggestion: ${_aiClassification!.type.displayName}',
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.w600,
-                                        color:
-                                            _aiClassification!.confidenceColor,
-                                        fontSize: 13,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      'Confidence: ${(_aiClassification!.confidence * 100).toStringAsFixed(0)}% (${_aiClassification!.confidenceLabel})',
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        color: Colors.grey[600],
-                                      ),
-                                    ),
-                                  ],
+                                child: Text(
+                                  'AI: ${_aiClassification!.type.displayName} (${(_aiClassification!.confidence * 100).toStringAsFixed(0)}%)',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    color:
+                                        _aiClassification!.confidenceColor,
+                                  ),
                                 ),
                               ),
                               if (selectedDocumentType !=
                                   _aiClassification!.type.displayName)
-                                TextButton(
-                                  onPressed: () {
+                                GestureDetector(
+                                  onTap: () {
                                     setState(() {
                                       selectedDocumentType =
                                           _aiClassification!.type.displayName;
                                     });
                                   },
-                                  style: TextButton.styleFrom(
+                                  child: Container(
                                     padding: const EdgeInsets.symmetric(
-                                        horizontal: 8, vertical: 4),
-                                    minimumSize: Size.zero,
+                                        horizontal: 8, vertical: 3),
+                                    decoration: BoxDecoration(
+                                      color: _aiClassification!.confidenceColor
+                                          .withOpacity(0.15),
+                                      borderRadius:
+                                          BorderRadius.circular(6),
+                                    ),
+                                    child: const Text('Apply',
+                                        style: TextStyle(fontSize: 11)),
                                   ),
-                                  child: const Text('Apply',
-                                      style: TextStyle(fontSize: 12)),
                                 ),
                             ],
                           ),
                         ),
+
                       // Extracted keys summary
                       _buildDialogExtractedKeys(),
-                      const Text(
-                        'user name:',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
+
+                      // User name (readonly)
+                      _buildFieldLabel('Scanned by'),
                       Container(
-                        padding: const EdgeInsets.all(12),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 10),
                         decoration: BoxDecoration(
                           color: Colors.grey[100],
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: Row(
                           children: [
-                            // Circular avatar with user initials
                             Container(
-                              width: 32,
-                              height: 32,
+                              width: 28,
+                              height: 28,
                               decoration: const BoxDecoration(
                                 color: Color(0xFF6868AC),
                                 shape: BoxShape.circle,
@@ -2268,49 +2355,26 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                                   style: const TextStyle(
                                     color: Colors.white,
                                     fontWeight: FontWeight.bold,
-                                    fontSize: 16,
+                                    fontSize: 14,
                                   ),
                                 ),
                               ),
                             ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: TextFormField(
-                                initialValue: documentName,
-                                readOnly: true,
-                                decoration: const InputDecoration(
-                                  border: InputBorder.none,
-                                  hintText: 'Logged-in user account',
-                                ),
+                            const SizedBox(width: 10),
+                            Text(documentName,
                                 style: const TextStyle(
-                                  color: Colors.black87,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                              ),
-                            ),
-                            Text(
-                              '${documentName.length}/50',
-                              style: TextStyle(
-                                color: Colors.grey[600],
-                                fontSize: 12,
-                              ),
-                            ),
+                                    fontWeight: FontWeight.w500)),
                           ],
                         ),
                       ),
-                      const SizedBox(height: 20),
-                      const Text(
-                        'Select document type:',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
                       const SizedBox(height: 12),
+
+                      // Document type selector
+                      _buildFieldLabel('Document type'),
                       Container(
                         width: double.infinity,
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 4),
+                            horizontal: 12, vertical: 2),
                         decoration: BoxDecoration(
                           color: Colors.grey[100],
                           borderRadius: BorderRadius.circular(8),
@@ -2346,36 +2410,433 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                           ),
                         ),
                       ),
+
+                      // ═══════════════════════════════════════════
+                      // DIVIDER
+                      // ═══════════════════════════════════════════
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Divider(
+                                  color: Colors.grey.shade300, thickness: 1),
+                            ),
+                            Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 8),
+                              child: Icon(Icons.arrow_downward,
+                                  size: 16, color: Colors.grey.shade400),
+                            ),
+                            Expanded(
+                              child: Divider(
+                                  color: Colors.grey.shade300, thickness: 1),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      // ═══════════════════════════════════════════
+                      // SECTION 2: Routing
+                      // ═══════════════════════════════════════════
+                      _buildSectionHeader(
+                        icon: Icons.send_outlined,
+                        label: 'Route to Department',
+                        stepNumber: '2',
+                      ),
+                      const SizedBox(height: 10),
+
+                      // ── Payroll fixed route ──
+                      if (isPayrollFixedRoute) ...[
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: Colors.deepPurple.shade50,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                                color: Colors.deepPurple.shade200),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(Icons.route,
+                                      color: Colors.deepPurple.shade700,
+                                      size: 18),
+                                  const SizedBox(width: 6),
+                                  Text('Fixed Payroll Route',
+                                      style: TextStyle(
+                                          fontWeight: FontWeight.w700,
+                                          color: Colors.deepPurple.shade800,
+                                          fontSize: 13)),
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              // Compact route display
+                              Wrap(
+                                spacing: 4,
+                                runSpacing: 4,
+                                crossAxisAlignment: WrapCrossAlignment.center,
+                                children: [
+                                  for (int i = 0;
+                                      i < payrollRoute.length;
+                                      i++) ...[
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 8, vertical: 4),
+                                      decoration: BoxDecoration(
+                                        color: Colors.deepPurple.shade100,
+                                        borderRadius:
+                                            BorderRadius.circular(6),
+                                      ),
+                                      child: Text(payrollRoute[i],
+                                          style: TextStyle(
+                                              fontSize: 11,
+                                              fontWeight: FontWeight.w600,
+                                              color: Colors
+                                                  .deepPurple.shade700)),
+                                    ),
+                                    if (i < payrollRoute.length - 1)
+                                      Icon(Icons.arrow_forward,
+                                          size: 14,
+                                          color:
+                                              Colors.deepPurple.shade300),
+                                  ],
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  SizedBox(
+                                    height: 28,
+                                    child: Switch(
+                                      value: useCustomRoute,
+                                      activeThumbColor:
+                                          Colors.deepPurple.shade600,
+                                      onChanged: (value) {
+                                        setState(
+                                            () => useCustomRoute = value);
+                                      },
+                                    ),
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text('Use custom route',
+                                      style: TextStyle(
+                                          fontSize: 12,
+                                          color:
+                                              Colors.deepPurple.shade600)),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+
+                      // ── Multi-send toggle (Memo/Announcement) ──
+                      if (supportsMultiSend) ...[
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: Colors.orange.shade50,
+                            borderRadius: BorderRadius.circular(8),
+                            border:
+                                Border.all(color: Colors.orange.shade200),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(Icons.send_to_mobile,
+                                  color: Colors.orange.shade700, size: 18),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  isMultiSendMode
+                                      ? 'Multi-Send: Multiple departments'
+                                      : 'Single department',
+                                  style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.orange.shade800),
+                                ),
+                              ),
+                              SizedBox(
+                                height: 28,
+                                child: Switch(
+                                  value: isMultiSendMode,
+                                  activeThumbColor:
+                                      Colors.orange.shade700,
+                                  onChanged: (val) {
+                                    setState(() {
+                                      isMultiSendMode = val;
+                                      if (!val) selectedDepartments.clear();
+                                    });
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                      ],
+
+                      // ── Multi-select department list ──
+                      if (supportsMultiSend && isMultiSendMode) ...[
+                        Container(
+                          constraints:
+                              const BoxConstraints(maxHeight: 180),
+                          decoration: BoxDecoration(
+                            border: Border.all(
+                                color: Colors.orange.shade200),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: SingleChildScrollView(
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                CheckboxListTile(
+                                  title: Text(
+                                    selectedDepartments.length ==
+                                            departments.length
+                                        ? 'Deselect All'
+                                        : 'Select All',
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 13),
+                                  ),
+                                  value: selectedDepartments.length ==
+                                      departments.length,
+                                  activeColor: Colors.orange.shade700,
+                                  dense: true,
+                                  onChanged: (val) {
+                                    setState(() {
+                                      if (val == true) {
+                                        selectedDepartments =
+                                            Set<String>.from(departments);
+                                      } else {
+                                        selectedDepartments.clear();
+                                      }
+                                    });
+                                  },
+                                ),
+                                const Divider(height: 1),
+                                ...departments.map((dept) {
+                                  return CheckboxListTile(
+                                    title: Text(dept,
+                                        style:
+                                            const TextStyle(fontSize: 13)),
+                                    value: selectedDepartments
+                                        .contains(dept),
+                                    activeColor: Colors.orange.shade700,
+                                    dense: true,
+                                    onChanged: (val) {
+                                      setState(() {
+                                        if (val == true) {
+                                          selectedDepartments.add(dept);
+                                        } else {
+                                          selectedDepartments.remove(dept);
+                                        }
+                                      });
+                                    },
+                                  );
+                                }),
+                              ],
+                            ),
+                          ),
+                        ),
+                        if (selectedDepartments.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 6),
+                            child: Text(
+                              'Selected: ${selectedDepartments.join(", ")}',
+                              style: TextStyle(
+                                  fontSize: 11,
+                                  color: Colors.grey.shade600),
+                            ),
+                          ),
+                      ]
+
+                      // ── Normal single-department routing ──
+                      else if (!isPayrollFixedRoute || useCustomRoute) ...[
+                        _buildFieldLabel('Next Department'),
+                        Container(
+                          padding:
+                              const EdgeInsets.symmetric(horizontal: 12),
+                          decoration: BoxDecoration(
+                            border: Border.all(
+                                color: const Color(0xFF6868AC)
+                                    .withOpacity(0.25)),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton<String>(
+                              value: departments.contains(selectedDepartment)
+                                  ? selectedDepartment
+                                  : (departments.isNotEmpty
+                                      ? departments.first
+                                      : null),
+                              isExpanded: true,
+                              icon: const Icon(Icons.arrow_drop_down,
+                                  color: Color(0xFF6868AC)),
+                              items: departments
+                                  .map((d) => DropdownMenuItem(
+                                      value: d, child: Text(d)))
+                                  .toList(),
+                              onChanged: (val) {
+                                if (val != null) {
+                                  setState(() =>
+                                      selectedDepartment = val);
+                                }
+                              },
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+
+                        _buildFieldLabel('End Location'),
+                        Container(
+                          padding:
+                              const EdgeInsets.symmetric(horizontal: 12),
+                          decoration: BoxDecoration(
+                            border: Border.all(
+                                color: const Color(0xFF6868AC)
+                                    .withOpacity(0.25)),
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton<String>(
+                              value: departments.contains(selectedEndLocation)
+                                  ? selectedEndLocation
+                                  : (departments.isNotEmpty
+                                      ? departments.first
+                                      : null),
+                              isExpanded: true,
+                              icon: const Icon(Icons.arrow_drop_down,
+                                  color: Color(0xFF6868AC)),
+                              items: departments
+                                  .map((d) => DropdownMenuItem(
+                                      value: d, child: Text(d)))
+                                  .toList(),
+                              onChanged: (val) {
+                                if (val != null) {
+                                  setState(() =>
+                                      selectedEndLocation = val);
+                                }
+                              },
+                            ),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
               ),
               actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  child: Text(
-                    'Cancel',
-                    style: TextStyle(color: Colors.grey[600]),
+                // Retake button
+                TextButton.icon(
+                  onPressed: () {
+                    Navigator.of(dialogContext).pop();
+                    // User goes back to camera to retake
+                  },
+                  icon: const Icon(Icons.camera_alt_outlined, size: 18),
+                  label: const Text('Retake'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.grey.shade600,
                   ),
                 ),
-                ElevatedButton(
-                  onPressed: () async {
-                    Navigator.of(context).pop();
-                    // Save document to gallery with the provided name and type
-                    await _saveDocumentToGallery(
-                        documentName, selectedDocumentType);
-                  },
+                const Spacer(),
+                // Save & Upload button
+                ElevatedButton.icon(
+                  onPressed: (supportsMultiSend &&
+                          isMultiSendMode &&
+                          selectedDepartments.isEmpty)
+                      ? null
+                      : () async {
+                          Navigator.of(dialogContext).pop();
+                          // Small delay to let dialog close
+                          await Future.delayed(
+                              const Duration(milliseconds: 150));
+                          if (!mounted) return;
+
+                          // Save document then upload directly
+                          await _saveDocumentAndUpload(
+                            documentName: documentName,
+                            documentType: selectedDocumentType,
+                            selectedDepartment: selectedDepartment,
+                            selectedEndLocation: selectedEndLocation,
+                            isPayrollFixedRoute: isPayrollFixedRoute,
+                            useCustomRoute: useCustomRoute,
+                            payrollRoute: payrollRoute,
+                            payrollFixedNextDepartment:
+                                payrollFixedNextDepartment,
+                            supportsMultiSend: supportsMultiSend,
+                            isMultiSendMode: isMultiSendMode,
+                            selectedDepartments: selectedDepartments,
+                          );
+                        },
+                  icon: const Icon(Icons.cloud_upload_outlined, size: 18),
+                  label: const Text('Save & Upload'),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF6868AC),
                     foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 10),
                   ),
-                  child: const Text('Save'),
                 ),
               ],
             );
           },
         );
       },
+    );
+  }
+
+  /// Helper: section header for combined dialog
+  Widget _buildSectionHeader({
+    required IconData icon,
+    required String label,
+    required String stepNumber,
+  }) {
+    return Row(
+      children: [
+        Container(
+          width: 24,
+          height: 24,
+          decoration: BoxDecoration(
+            color: const Color(0xFF6868AC),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Center(
+            child: Text(stepNumber,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold)),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Icon(icon, size: 18, color: const Color(0xFF6868AC)),
+        const SizedBox(width: 6),
+        Text(label,
+            style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: Color(0xFF6868AC))),
+      ],
+    );
+  }
+
+  /// Helper: field label
+  Widget _buildFieldLabel(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Text(text,
+          style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: Colors.grey.shade700)),
     );
   }
 
@@ -2515,25 +2976,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         );
       }
 
-      // Optional PDF preview step before upload prompt
-      if (generatedPdfPath != null && mounted) {
-        await _showPdfPreviewDialog(
-          pdfPath: generatedPdfPath,
-          documentName: documentName,
-        );
-      }
-
-      // After preview (or if preview not available), show upload to tracking modal
-      if (mounted) {
-        _showUploadToTrackingModal(
-          documentName: documentName,
-          documentType: documentType,
-          timestamp: timestamp,
-          textPath: textPath,
-          imagePath: firstImagePath,
-          pdfPath: generatedPdfPath,
-        );
-      }
+      // PDF preview step removed per client request (#4)
+      // Upload-to-tracking modal also removed — routing handled in combined dialog
 
       debugPrint('✅ Document saved to gallery: $documentName ($documentType)');
       debugPrint('📁 Image: $firstImagePath');
@@ -2554,6 +2998,198 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           ),
         );
       }
+    }
+  }
+
+  /// Combined save-and-upload method called from the merged dialog.
+  /// Saves the document to gallery, then uploads to tracking with
+  /// the routing parameters already collected from the single dialog.
+  Future<void> _saveDocumentAndUpload({
+    required String documentName,
+    required String documentType,
+    required String selectedDepartment,
+    required String selectedEndLocation,
+    required bool isPayrollFixedRoute,
+    required bool useCustomRoute,
+    required List<String> payrollRoute,
+    required String payrollFixedNextDepartment,
+    required bool supportsMultiSend,
+    required bool isMultiSendMode,
+    required Set<String> selectedDepartments,
+  }) async {
+    // Step 1: Save locally (uses existing save logic)
+    await _saveDocumentToGallery(documentName, documentType);
+
+    if (!mounted) return;
+
+    // Step 2: Upload to admin tracking
+    final timestamp = _currentDocument?.mobileTimestamp ?? '';
+    final firstImagePath = _currentDocument?.imagePath ?? '';
+    final textPath = firstImagePath.isNotEmpty
+        ? firstImagePath.replaceFirst(RegExp(r'\.(jpg|jpeg|png)$', caseSensitive: false), '.txt')
+        : '';
+    String? generatedPdfPath;
+    try {
+      final pdfDir = await getApplicationDocumentsDirectory();
+      final pdfFile = File('${pdfDir.path}/documents/$documentName.pdf');
+      if (await pdfFile.exists()) generatedPdfPath = pdfFile.path;
+    } catch (_) {}
+
+    final uploadFilePath = (generatedPdfPath != null && generatedPdfPath.isNotEmpty)
+        ? generatedPdfPath
+        : firstImagePath;
+
+    // Show uploading progress
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Row(
+            children: [
+              SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                    strokeWidth: 2, color: Colors.white),
+              ),
+              SizedBox(width: 12),
+              Text('Uploading to admin tracking...'),
+            ],
+          ),
+          duration: Duration(seconds: 3),
+        ),
+      );
+    }
+
+    // Handle multi-send (Memo/Announcement)
+    if (supportsMultiSend && isMultiSendMode && selectedDepartments.isNotEmpty) {
+      if (documentType == 'Announcement') {
+        int successCount = 0;
+        int failCount = 0;
+        for (final dept in selectedDepartments) {
+          final ok = await _uploadToTrackingPhp(
+            timestamp: '${timestamp}_$dept',
+            documentName: documentName,
+            documentType: documentType,
+            uploadFilePath: uploadFilePath,
+            textPath: textPath,
+            nextDepartment: dept,
+            endLocation: dept,
+            isBroadcast: true,
+          );
+          if (ok) successCount++; else failCount++;
+        }
+        if (!mounted) return;
+        if (failCount == 0) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('✅ Announcement sent to $successCount department(s)!'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('⚠️ Sent to $successCount, failed: $failCount'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
+      } else {
+        // Memo: sequential routing
+        final firstDept = selectedDepartments.first;
+        final lastDept = selectedDepartments.last;
+        final routingQueue = selectedDepartments.join(',');
+        final ok = await _uploadToTrackingPhp(
+          timestamp: timestamp,
+          documentName: documentName,
+          documentType: documentType,
+          uploadFilePath: uploadFilePath,
+          textPath: textPath,
+          nextDepartment: firstDept,
+          endLocation: lastDept,
+          isBroadcast: false,
+          routingQueue: routingQueue,
+        );
+        if (!mounted) return;
+        if (ok) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('✅ Memo routed to ${selectedDepartments.length} department(s)! Starting with $firstDept'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('❌ Failed to send memo'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    } else if (isPayrollFixedRoute && !useCustomRoute) {
+      // Payroll fixed route
+      final routingQueue = payrollRoute.join(',');
+      final ok = await _uploadToTrackingPhp(
+        timestamp: timestamp,
+        documentName: documentName,
+        documentType: documentType,
+        uploadFilePath: uploadFilePath,
+        textPath: textPath,
+        nextDepartment: payrollFixedNextDepartment,
+        endLocation: payrollRoute.last,
+        isBroadcast: false,
+        routingQueue: routingQueue,
+      );
+      if (!mounted) return;
+      if (ok) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✅ Payroll routed: ${payrollRoute.join(' → ')}'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('❌ Failed to upload payroll'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } else {
+      // Normal single-send
+      final ok = await _uploadToTrackingPhp(
+        timestamp: timestamp,
+        documentName: documentName,
+        documentType: documentType,
+        uploadFilePath: uploadFilePath,
+        textPath: textPath,
+        nextDepartment: selectedDepartment,
+        endLocation: selectedEndLocation,
+      );
+      if (!mounted) return;
+      if (ok) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('✅ Document uploaded to tracking successfully!'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('❌ Upload failed. Check debug log.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+
+    // Navigate home after upload
+    await Future.delayed(const Duration(milliseconds: 500));
+    if (mounted) {
+      Navigator.of(context).pushNamedAndRemoveUntil('/home', (route) => false);
     }
   }
 

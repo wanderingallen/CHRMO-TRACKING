@@ -35,9 +35,21 @@ if (!$keep && isset($_COOKIE['remember_me'])) {
     setcookie('remember_me', '', time() - 3600, '/', '', false, true);
 }
 
+// Set short-lived logout feedback cookie so login page can reliably show modal.
+$logoutNoticeOptions = [
+    'expires' => time() + 20,
+    'path' => '/',
+    'secure' => false,
+    'httponly' => true,
+    'samesite' => 'Lax'
+];
+setcookie('logout_feedback', '1', $logoutNoticeOptions);
+
 // Clear any output
 ob_end_clean();
 
 // Redirect to login page
-header('Location: log-in.php?logged_out=true', true, 302);
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
+header('Location: log-in.php?logged_out=1', true, 302);
 exit();
