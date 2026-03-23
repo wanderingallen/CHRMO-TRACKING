@@ -81,12 +81,16 @@ These are already configured in your project:
 
 ```
 Project ID: chrmo-dta-capstone
-API Key: AIzaSyD2cRlu_c4QOL_XShdpIEvwHsnNRRsWRNQ
+API Key: ROTATED_AND_STORE_OUTSIDE_SOURCE_CONTROL
 App ID (Android): 1:654853931664:android:20a059aca3f63068218e15
 App ID (Web): 1:654853931664:web:2ff43fa7891ab848218e15
 Messaging Sender ID: 654853931664
 Storage Bucket: chrmo-dta-capstone.firebasestorage.app
 ```
+
+Do not commit Firebase API keys directly into this repository. Load the
+rotated key from environment-specific configuration or a server-side secret
+store instead.
 
 ## Troubleshooting
 

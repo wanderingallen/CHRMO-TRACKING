@@ -726,11 +726,86 @@ class _NotificationPageState extends State<NotificationPage>
         n['status'] = 'read';
       }
     });
-    _showSnack('All notifications marked as read');
+    // Show floating banner that auto-fades after 2 seconds
+    _showFloatingBanner('All notifications marked as read ✓');
     // Best-effort: mark each notification as read on server
     for (final n in _notifications) {
       unawaited(_markReadOnServer(n));
     }
+  }
+
+  void _showFloatingBanner(String message) {
+    late OverlayEntry entry;
+    final controller = ValueNotifier<double>(0.0);
+
+    entry = OverlayEntry(
+      builder: (context) => Positioned(
+        top: MediaQuery.of(context).padding.top + 8,
+        left: 16,
+        right: 16,
+        child: Material(
+          color: Colors.transparent,
+          child: ValueListenableBuilder<double>(
+            valueListenable: controller,
+            builder: (_, opacity, __) => AnimatedOpacity(
+              opacity: opacity,
+              duration: const Duration(milliseconds: 400),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: BoxDecoration(
+                  color: _themeColor,
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: [
+                    BoxShadow(
+                      color: _themeColor.withOpacity(0.3),
+                      blurRadius: 12,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.2),
+                        shape: BoxShape.circle,
+                      ),
+                      child: const Icon(Icons.done_all_rounded,
+                          color: Colors.white, size: 18),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        message,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.w600,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    Overlay.of(context).insert(entry);
+    // Fade in
+    Future.microtask(() => controller.value = 1.0);
+    // Fade out after 2 seconds, then remove
+    Future.delayed(const Duration(seconds: 2), () {
+      controller.value = 0.0;
+      Future.delayed(const Duration(milliseconds: 450), () {
+        entry.remove();
+        controller.dispose();
+      });
+    });
   }
 
   Future<void> _clearAllRead() async {

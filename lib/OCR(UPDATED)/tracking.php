@@ -8674,6 +8674,20 @@ $connection->close();
                   ${(doc.status === 'Archived' || doc.status === 'Rejected') ? 'disabled' : ''}>
                   <i class="fas fa-archive"></i> Archive
                 </button>
+                ${(!window.__trackingIsAdmin && window.__trackingUserDept &&
+                   doc.current_holder && doc.current_holder.toUpperCase().trim() === window.__trackingUserDept.toUpperCase().trim() &&
+                   doc.status === 'Pending')
+                  ? `<button class="action-button" style="background:var(--success-color,#22c55e);color:#fff;" title="Mark as Received"
+                       onclick="webReceiveDocument('${doc.id}')">
+                       <i class="fas fa-check-circle"></i> Receive
+                     </button>` : ''}
+                ${(!window.__trackingIsAdmin && window.__trackingUserDept &&
+                   doc.current_holder && doc.current_holder.toUpperCase().trim() === window.__trackingUserDept.toUpperCase().trim() &&
+                   (doc.status === 'In Review' || doc.status === 'Received'))
+                  ? `<button class="action-button" style="background:var(--brand-primary,#6868AC);color:#fff;" title="Route to Department"
+                       onclick="openRouteModal('${doc.id}', '${displayType}', '${doc.employee_name || ''}', '${doc.current_holder || ''}', '${doc.end_location || ''}', '${doc.mobile_timestamp || ''}', '${doc.doc_hash || ''}', '${doc.file_path || ''}', '${doc.routing_queue || ''}')">
+                       <i class="fas fa-share"></i> Route
+                     </button>` : ''}
               </div>
             </td>
           `;
@@ -11635,6 +11649,204 @@ $connection->close();
           performOcrSearch(searchInput.value.trim());
         }
       });
+    // ──────────────────────────────────────────────────
+    // WEB ROUTING: Receive & Route for department users
+    // ──────────────────────────────────────────────────
+    const ROUTE_API = (() => {
+      const s = document.querySelector('script[src*="tracking"]');
+      const base = window.location.pathname.replace(/\/[^\/]*$/, '');
+      return base + '/api/route_document.php';
+    })();
+    const PAYROLL_FIXED_ROUTE = ['HR','CBO','ACCOUNTING','CAO','CTO'];
+    const ALL_DEPARTMENTS = <?php
+      $deptList = [];
+      try {
+        $dRes = $connection->query("SELECT DISTINCT department FROM control WHERE department IS NOT NULL AND department != '' ORDER BY department ASC");
+        while ($dRes && ($dRow = $dRes->fetch_assoc())) {
+          $d = strtoupper(trim($dRow['department']));
+          if ($d !== '') $deptList[] = $d;
+        }
+        if ($dRes) $dRes->free();
+      } catch (Throwable $t) {}
+      if (empty($deptList)) $deptList = ['CPDO','GSO','CBO','CTO','CACCO','CADO','CMO','HR'];
+      echo json_encode($deptList);
+    ?>;
+
+    async function webReceiveDocument(docId) {
+      if (!confirm('Mark this document as Received?')) return;
+      const dept = window.__trackingUserDept || '';
+      const url = window.location.pathname + '?action=mark_received&id=' + encodeURIComponent(docId) + '&receiver_department=' + encodeURIComponent(dept);
+      try {
+        const resp = await fetch(url);
+        const data = await resp.json();
+        if (data.success) {
+          // Update row status badge
+          const row = document.querySelector(`tr[data-id="${docId}"]`);
+          if (row) {
+            const statusCell = row.querySelector('.status-pill, [class*="status"]');
+            if (statusCell) { statusCell.textContent = data.new_status || 'In Review'; statusCell.className = 'status-pill status-in-review'; }
+            row.setAttribute('data-status', data.new_status || 'In Review');
+          }
+          showToast('✅ Document received successfully!', 'success');
+          // Refresh the table
+          if (typeof window.applyFiltersAndSearch === 'function') window.applyFiltersAndSearch();
+        } else {
+          showToast('❌ ' + (data.error || 'Failed to receive'), 'error');
+        }
+      } catch (e) {
+        showToast('❌ Network error: ' + e.message, 'error');
+      }
+    }
+
+    function openRouteModal(docId, docType, empName, currentHolder, endLoc, mobileTs, docHash, filePath, routingQueue) {
+      // Remove existing modal if any
+      const existing = document.getElementById('routeDocumentModal');
+      if (existing) existing.remove();
+
+      const dept = (window.__trackingUserDept || '').toUpperCase().trim();
+      const isPayroll = docType.toLowerCase().indexOf('payroll') !== -1;
+      const availableDepts = ALL_DEPARTMENTS.filter(d => d.toUpperCase() !== dept);
+
+      // Build dept options
+      const deptOptions = availableDepts.map(d => `<option value="${d}">${d}</option>`).join('');
+
+      // Payroll route visual
+      let payrollHtml = '';
+      if (isPayroll) {
+        const steps = PAYROLL_FIXED_ROUTE.map((d, i) => {
+          const isCurrent = d.toUpperCase() === dept;
+          return `<span style="display:inline-flex;align-items:center;padding:4px 10px;border-radius:6px;font-size:12px;font-weight:600;
+            background:${isCurrent ? '#6868AC' : '#ede9fe'};color:${isCurrent ? '#fff' : '#5b21b6'};">${d}</span>` +
+            (i < PAYROLL_FIXED_ROUTE.length - 1 ? '<i class="fas fa-arrow-right" style="color:#a78bfa;margin:0 4px;font-size:10px;"></i>' : '');
+        }).join('');
+        payrollHtml = `
+          <div style="background:#f5f3ff;border:1px solid #c4b5fd;border-radius:10px;padding:12px;margin-bottom:16px;">
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px;">
+              <i class="fas fa-route" style="color:#7c3aed;"></i>
+              <strong style="color:#5b21b6;font-size:13px;">Fixed Payroll Route</strong>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:4px;">${steps}</div>
+          </div>`;
+      }
+
+      const modal = document.createElement('div');
+      modal.id = 'routeDocumentModal';
+      modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:10000;display:flex;align-items:center;justify-content:center;animation:fadeIn 0.2s ease;';
+      modal.innerHTML = `
+        <div style="background:#fff;border-radius:16px;width:90%;max-width:480px;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,0.3);">
+          <div style="padding:20px 24px;border-bottom:1px solid #eee;">
+            <div style="display:flex;align-items:center;gap:12px;">
+              <div style="background:rgba(104,104,172,0.1);padding:10px;border-radius:10px;">
+                <i class="fas fa-share" style="color:#6868AC;font-size:18px;"></i>
+              </div>
+              <div>
+                <h3 style="margin:0;font-size:18px;font-weight:700;color:#1e293b;">Route Document</h3>
+                <p style="margin:2px 0 0;font-size:12px;color:#94a3b8;">Forward to next department</p>
+              </div>
+              <button onclick="document.getElementById('routeDocumentModal').remove()" style="margin-left:auto;background:none;border:none;cursor:pointer;font-size:18px;color:#94a3b8;">✕</button>
+            </div>
+          </div>
+          <div style="padding:20px 24px;">
+            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;margin-bottom:16px;">
+              <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Document</div>
+              <div style="font-weight:600;color:#1e293b;">${docType} — ${empName || 'Unknown'}</div>
+              <div style="font-size:12px;color:#64748b;">From: ${currentHolder} → End: ${endLoc}</div>
+            </div>
+            ${payrollHtml}
+            <div style="margin-bottom:14px;">
+              <label style="display:block;font-size:13px;font-weight:600;color:#475569;margin-bottom:6px;">Next Department</label>
+              <select id="routeNextDept" style="width:100%;padding:10px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;outline:none;">
+                ${deptOptions}
+              </select>
+            </div>
+            <div style="margin-bottom:14px;">
+              <label style="display:block;font-size:13px;font-weight:600;color:#475569;margin-bottom:6px;">End Location</label>
+              <select id="routeEndLoc" style="width:100%;padding:10px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;outline:none;">
+                ${deptOptions}
+              </select>
+            </div>
+          </div>
+          <div style="padding:12px 24px 20px;display:flex;gap:10px;justify-content:flex-end;border-top:1px solid #f1f5f9;">
+            <button onclick="document.getElementById('routeDocumentModal').remove()" style="padding:10px 20px;border:1px solid #e2e8f0;background:#fff;border-radius:8px;cursor:pointer;font-weight:500;color:#64748b;">Cancel</button>
+            <button id="routeSubmitBtn" onclick="submitRouteDocument('${docId}', '${docType}', '${empName}', '${currentHolder}', '${mobileTs}', '${docHash}', '${filePath}')"
+              style="padding:10px 24px;background:#6868AC;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;display:flex;align-items:center;gap:6px;">
+              <i class="fas fa-paper-plane"></i> Route
+            </button>
+          </div>
+        </div>`;
+      document.body.appendChild(modal);
+
+      // Pre-select end location to match existing
+      if (endLoc) {
+        const endSel = document.getElementById('routeEndLoc');
+        if (endSel) { for (const opt of endSel.options) { if (opt.value.toUpperCase() === endLoc.toUpperCase()) { opt.selected = true; break; } } }
+      }
+
+      // Auto-select next dept for payroll
+      if (isPayroll) {
+        const idx = PAYROLL_FIXED_ROUTE.findIndex(d => d.toUpperCase() === dept);
+        if (idx >= 0 && idx < PAYROLL_FIXED_ROUTE.length - 1) {
+          const nextDept = PAYROLL_FIXED_ROUTE[idx + 1];
+          const sel = document.getElementById('routeNextDept');
+          if (sel) { for (const opt of sel.options) { if (opt.value.toUpperCase() === nextDept.toUpperCase()) { opt.selected = true; break; } } }
+        }
+      }
+    }
+
+    async function submitRouteDocument(docId, docType, empName, currentHolder, mobileTs, docHash, filePath) {
+      const nextDept = document.getElementById('routeNextDept')?.value || '';
+      const endLoc = document.getElementById('routeEndLoc')?.value || '';
+      if (!nextDept) { showToast('Please select a department', 'error'); return; }
+
+      const btn = document.getElementById('routeSubmitBtn');
+      if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Routing...'; }
+
+      const senderDept = (window.__trackingUserDept || '').trim();
+      const senderName = (window.currentUser || '').trim();
+
+      const formData = new FormData();
+      formData.append('sender_name', senderName || empName);
+      formData.append('sender_department', senderDept);
+      formData.append('receiver_department', nextDept);
+      formData.append('file_name', docType + ' - ' + (empName || 'Unknown'));
+      formData.append('type', docType);
+      formData.append('tracking_id', docId);
+      formData.append('mobile_timestamp', mobileTs || '');
+      formData.append('doc_hash', docHash || '');
+      formData.append('file_path', filePath || '');
+      formData.append('end_location', endLoc || nextDept);
+      formData.append('status', 'Pending');
+
+      try {
+        const resp = await fetch(ROUTE_API, { method: 'POST', body: formData });
+        const data = await resp.json();
+        if (data.success || data.track_id || data.tracking_id) {
+          document.getElementById('routeDocumentModal')?.remove();
+          showToast('✅ Document routed to ' + nextDept + '!', 'success');
+          if (typeof window.applyFiltersAndSearch === 'function') window.applyFiltersAndSearch();
+        } else {
+          showToast('❌ ' + (data.message || data.error || 'Routing failed'), 'error');
+          if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane"></i> Route'; }
+        }
+      } catch (e) {
+        showToast('❌ Network error: ' + e.message, 'error');
+        if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane"></i> Route'; }
+      }
+    }
+
+    function showToast(msg, type) {
+      const existing = document.getElementById('routeToast');
+      if (existing) existing.remove();
+      const toast = document.createElement('div');
+      toast.id = 'routeToast';
+      toast.style.cssText = `position:fixed;top:20px;right:20px;z-index:10001;padding:14px 20px;border-radius:10px;font-weight:500;font-size:14px;color:#fff;box-shadow:0 8px 30px rgba(0,0,0,0.15);animation:slideIn 0.3s ease;max-width:400px;
+        background:${type === 'success' ? '#22c55e' : type === 'error' ? '#ef4444' : '#6868AC'};`;
+      toast.textContent = msg;
+      document.body.appendChild(toast);
+      setTimeout(() => { toast.style.opacity = '0'; toast.style.transition = 'opacity 0.4s'; setTimeout(() => toast.remove(), 500); }, 3000);
+    }
+    // ──── END WEB ROUTING ────
+
     });
   </script>
 </body>

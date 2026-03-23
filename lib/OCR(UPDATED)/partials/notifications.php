@@ -232,7 +232,7 @@
   import { getFirestore, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-firestore.js";
 
   const firebaseConfig = {
-    apiKey: "AIzaSyD2cRlu_c4QOL_XShdpIEvwHsnNRRsWRNQ",
+    apiKey: <?= json_encode(getenv('FIREBASE_API_KEY') ?: 'ROTATED_AND_STORE_OUTSIDE_SOURCE_CONTROL') ?>,
     authDomain: "chrmo-dta-capstone.firebaseapp.com",
     databaseURL: "https://chrmo-dta-capstone-default-rtdb.asia-southeast1.firebasedatabase.app",
     projectId: "chrmo-dta-capstone",

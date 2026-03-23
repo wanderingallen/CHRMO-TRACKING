@@ -5513,7 +5513,7 @@ class _DashboardPageState extends State<DashboardPage>
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(
-                    'No recent documents',
+                    'No recent documents\nPull down to refresh',
                     style: TextStyle(
                         fontFamily: 'Poppins',
                         fontSize: 14,
@@ -5523,13 +5523,6 @@ class _DashboardPageState extends State<DashboardPage>
                             .onSurface
                             .withOpacity(0.5)),
                   ),
-                ),
-                TextButton(
-                  onPressed: _fetchRecentActivity,
-                  style: TextButton.styleFrom(
-                    foregroundColor: const Color(0xFF6868AC),
-                  ),
-                  child: const Text('Refresh'),
                 ),
               ],
             ),

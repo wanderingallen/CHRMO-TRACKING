@@ -368,11 +368,12 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                       builder: (context, value, child) => Transform.scale(
                         scale: value,
                         child: Container(
-                          padding: const EdgeInsets.all(18),
-                          decoration: BoxDecoration(
+                          width: 72,
+                          height: 72,
+                          decoration: const BoxDecoration(
                             color: Colors.white,
-                            borderRadius: BorderRadius.circular(16),
-                            boxShadow: const [
+                            shape: BoxShape.circle,
+                            boxShadow: [
                               BoxShadow(
                                 color: Colors.black12,
                                 blurRadius: 20,
@@ -380,18 +381,11 @@ class _LoginPageState extends State<LoginPage> with TickerProviderStateMixin {
                               ),
                             ],
                           ),
-                          child: const Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              SizedBox(
-                                width: 22,
-                                height: 22,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2.2),
-                              ),
-                              SizedBox(width: 12),
-                              Text('Signing you in...'),
-                            ],
+                          alignment: Alignment.center,
+                          child: const SizedBox(
+                            width: 30,
+                            height: 30,
+                            child: CircularProgressIndicator(strokeWidth: 2.8),
                           ),
                         ),
                       ),

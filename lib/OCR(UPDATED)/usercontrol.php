@@ -844,6 +844,48 @@ $connection->close();
       padding: 10px 15px;
       font-size: 14px;
     }
+    .uc-panel-users .user-table {
+      table-layout: fixed;
+    }
+    .uc-panel-users .user-table th:nth-child(1),
+    .uc-panel-users .user-table td:nth-child(1) {
+      width: 44px;
+      text-align: center;
+    }
+    .uc-panel-users .user-table th:nth-child(2),
+    .uc-panel-users .user-table td:nth-child(2) {
+      width: 23%;
+    }
+    .uc-panel-users .user-table th:nth-child(3),
+    .uc-panel-users .user-table td:nth-child(3) {
+      width: 34%;
+    }
+    .uc-panel-users .user-table th:nth-child(4),
+    .uc-panel-users .user-table td:nth-child(4) {
+      width: 19%;
+    }
+    .uc-panel-users .user-table th:nth-child(5),
+    .uc-panel-users .user-table td:nth-child(5) {
+      width: 126px;
+      text-align: center;
+      white-space: nowrap;
+    }
+    .uc-panel-users .user-table td:nth-child(2),
+    .uc-panel-users .user-table td:nth-child(3),
+    .uc-panel-users .user-table td:nth-child(4) {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .uc-panel-users .user-table td:nth-child(5) {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+    .uc-panel-users .user-table td:nth-child(5) .action-btn {
+      flex: 0 0 auto;
+    }
     @media (max-width: 1100px) {
       .uc-split-layout {
         grid-template-columns: 1fr;

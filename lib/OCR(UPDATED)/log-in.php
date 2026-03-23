@@ -464,8 +464,15 @@ if (isset($_POST['reset_password']) && $_POST['reset_password'] === 'true') {
 
 // Check for logout success message from dashboard.php
 $showLogoutModal = false;
-if (isset($_GET['logged_out']) && $_GET['logged_out'] === 'true') {
+if (
+    isset($_GET['logged_out'])
+    && in_array(strtolower((string)$_GET['logged_out']), ['1', 'true', 'yes'], true)
+) {
     $showLogoutModal = true;
+}
+if (isset($_COOKIE['logout_feedback']) && $_COOKIE['logout_feedback'] === '1') {
+    $showLogoutModal = true;
+    setcookie('logout_feedback', '', time() - 3600, '/');
 }
 
 // Check for registration success message from register.php

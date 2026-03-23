@@ -198,6 +198,8 @@ class NotificationService {
         importance: Importance.max,
         priority: Priority.high,
         icon: '@mipmap/ic_launcher',
+        playSound: true,
+        enableVibration: true,
       );
       const iosDetails = DarwinNotificationDetails();
       const details =
@@ -235,6 +237,8 @@ class NotificationService {
         importance: Importance.max,
         priority: Priority.high,
         icon: '@mipmap/ic_launcher',
+        playSound: true,
+        enableVibration: true,
       );
       const iosDetails = DarwinNotificationDetails();
       const details =
