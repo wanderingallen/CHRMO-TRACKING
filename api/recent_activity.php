@@ -52,7 +52,7 @@ if ($limit < 1 || $limit > 100) { $limit = 20; }
 // even when current_holder is empty. We treat current_holder as highest priority, then
 // end_location, then department.
 $sql = "SELECT id, employee_name, department, type, status, created_at, date_submitted, mobile_timestamp,
-               current_holder, end_location, file_path, doc_hash
+               current_holder, end_location, file_path, doc_hash, id AS tracking_id
   FROM tracking
   WHERE LOWER(COALESCE(status,'')) NOT IN ('completed','archived','approved')
   ORDER BY COALESCE(created_at, date_submitted) DESC, id DESC
@@ -105,6 +105,7 @@ if ($stmt = $connection->prepare($sql)) {
         'file_url' => $filePath,
         'mobile_timestamp' => (string)($r['mobile_timestamp'] ?? ''),
         'doc_hash' => $docHash,
+        'tracking_id' => (string)($r['tracking_id'] ?? $r['id'] ?? ''),
       ];
     }
     $res->free();

@@ -2150,7 +2150,14 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     var allDepartments = await _fetchDepartmentsForMobile();
     if (allDepartments.isEmpty) {
       allDepartments = [
-        'CPDO', 'GSO', 'CBO', 'CTO', 'CACCO', 'CADO', 'CMO', 'HR',
+        'CPDO',
+        'GSO',
+        'CBO',
+        'CTO',
+        'CACCO',
+        'CADO',
+        'CMO',
+        'HR',
       ];
     }
     final availableDepartments =
@@ -2158,10 +2165,17 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     final departments =
         availableDepartments.isNotEmpty ? availableDepartments : allDepartments;
 
-    String selectedDepartment =
-        departments.isNotEmpty ? departments.first : '';
+    String selectedDepartment = departments.isNotEmpty ? departments.first : '';
     String selectedEndLocation =
         departments.isNotEmpty ? departments.first : '';
+    final bool isRerouteFlow =
+        (_routingTrackingId?.trim().isNotEmpty ?? false) ||
+            (_routingMobileTimestamp?.trim().isNotEmpty ?? false);
+    final String? lockedEndLocation =
+        isRerouteFlow ? await _resolveExistingEndLocationForRouting() : null;
+    if ((lockedEndLocation ?? '').trim().isNotEmpty) {
+      selectedEndLocation = lockedEndLocation!.trim();
+    }
 
     // Payroll fixed route
     final List<String> payrollRoute = ['HR', 'CBO', 'ACCOUNTING', 'CAO', 'CTO'];
@@ -2177,6 +2191,15 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       builder: (BuildContext dialogContext) {
         return StatefulBuilder(
           builder: (context, setState) {
+            final dialogMedia = MediaQuery.of(context);
+            final dialogMaxHeight = dialogMedia.size.height *
+                (dialogMedia.size.height < 700 ? 0.84 : 0.78);
+            final dialogMaxWidth = dialogMedia.size.width < 390
+                ? dialogMedia.size.width * 0.96
+                : dialogMedia.size.width * 0.9;
+            final multiSelectMaxHeight =
+                max(140.0, min(240.0, dialogMaxHeight * 0.35));
+
             // Derived routing flags based on current document type
             final bool supportsMultiSend =
                 ['Memo', 'Announcement'].contains(selectedDocumentType);
@@ -2184,21 +2207,14 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                 selectedDocumentType.toLowerCase() == 'payroll';
             final int payrollUploaderIndex = payrollRoute
                 .indexWhere((d) => d.toUpperCase() == userDepartment);
-            final String payrollFixedNextDepartment =
-                payrollUploaderIndex >= 0
-                    ? (payrollUploaderIndex < payrollRoute.length - 1
-                        ? payrollRoute[payrollUploaderIndex + 1]
-                        : payrollRoute.last)
-                    : payrollRoute.first;
-
-            // Reset multi-send when type changes
-            if (!supportsMultiSend && isMultiSendMode) {
-              isMultiSendMode = false;
-              selectedDepartments.clear();
-            }
+            final String payrollFixedNextDepartment = payrollUploaderIndex >= 0
+                ? (payrollUploaderIndex < payrollRoute.length - 1
+                    ? payrollRoute[payrollUploaderIndex + 1]
+                    : payrollRoute.last)
+                : payrollRoute.first;
 
             return AlertDialog(
-              scrollable: true,
+              scrollable: false,
               insetPadding:
                   const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
               shape: RoundedRectangleBorder(
@@ -2224,8 +2240,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                             style: TextStyle(
                                 fontSize: 18, fontWeight: FontWeight.bold)),
                         Text('Save document and send to department',
-                            style: TextStyle(
-                                fontSize: 12, color: Colors.grey)),
+                            style: TextStyle(fontSize: 12, color: Colors.grey)),
                       ],
                     ),
                   ),
@@ -2250,234 +2265,235 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
               ),
               content: ConstrainedBox(
                 constraints: BoxConstraints(
-                  maxHeight: MediaQuery.of(context).size.height * 0.75,
-                  maxWidth: MediaQuery.of(context).size.width * 0.9,
+                  maxHeight: dialogMaxHeight,
+                  maxWidth: dialogMaxWidth,
                 ),
-                child: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // ═══════════════════════════════════════════
-                      // SECTION 1: Document Information
-                      // ═══════════════════════════════════════════
-                      _buildSectionHeader(
-                        icon: Icons.description_outlined,
-                        label: 'Document Info',
-                        stepNumber: '1',
-                      ),
-                      const SizedBox(height: 10),
+                child: ListView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  padding: EdgeInsets.zero,
+                  children: [
+                    // ═══════════════════════════════════════════
+                    // SECTION 1: Document Information
+                    // ═══════════════════════════════════════════
+                    _buildSectionHeader(
+                      icon: Icons.description_outlined,
+                      label: 'Document Info',
+                      stepNumber: '1',
+                    ),
+                    const SizedBox(height: 10),
 
-                      // AI Document Type Suggestion
-                      if (_aiClassification != null &&
-                          _aiClassification!.confidence >= 0.15)
-                        Container(
-                          margin: const EdgeInsets.only(bottom: 12),
-                          padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(
+                    // AI Document Type Suggestion
+                    if (_aiClassification != null &&
+                        _aiClassification!.confidence >= 0.15)
+                      Container(
+                        margin: const EdgeInsets.only(bottom: 12),
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: _aiClassification!.confidenceColor
+                              .withOpacity(0.08),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
                             color: _aiClassification!.confidenceColor
-                                .withOpacity(0.08),
-                            borderRadius: BorderRadius.circular(8),
-                            border: Border.all(
-                              color: _aiClassification!.confidenceColor
-                                  .withOpacity(0.3),
-                            ),
+                                .withOpacity(0.3),
                           ),
-                          child: Row(
-                            children: [
-                              Icon(Icons.auto_awesome,
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.auto_awesome,
+                                color: _aiClassification!.confidenceColor,
+                                size: 18),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'AI: ${_aiClassification!.type.displayName} (${(_aiClassification!.confidence * 100).toStringAsFixed(0)}%)',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
                                   color: _aiClassification!.confidenceColor,
-                                  size: 18),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  'AI: ${_aiClassification!.type.displayName} (${(_aiClassification!.confidence * 100).toStringAsFixed(0)}%)',
-                                  style: TextStyle(
-                                    fontSize: 12,
-                                    fontWeight: FontWeight.w600,
-                                    color:
-                                        _aiClassification!.confidenceColor,
-                                  ),
-                                ),
-                              ),
-                              if (selectedDocumentType !=
-                                  _aiClassification!.type.displayName)
-                                GestureDetector(
-                                  onTap: () {
-                                    setState(() {
-                                      selectedDocumentType =
-                                          _aiClassification!.type.displayName;
-                                    });
-                                  },
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(
-                                        horizontal: 8, vertical: 3),
-                                    decoration: BoxDecoration(
-                                      color: _aiClassification!.confidenceColor
-                                          .withOpacity(0.15),
-                                      borderRadius:
-                                          BorderRadius.circular(6),
-                                    ),
-                                    child: const Text('Apply',
-                                        style: TextStyle(fontSize: 11)),
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-
-                      // Extracted keys summary
-                      _buildDialogExtractedKeys(),
-
-                      // User name (readonly)
-                      _buildFieldLabel('Scanned by'),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 10),
-                        decoration: BoxDecoration(
-                          color: Colors.grey[100],
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Row(
-                          children: [
-                            Container(
-                              width: 28,
-                              height: 28,
-                              decoration: const BoxDecoration(
-                                color: Color(0xFF6868AC),
-                                shape: BoxShape.circle,
-                              ),
-                              child: Center(
-                                child: Text(
-                                  documentName.isNotEmpty
-                                      ? documentName[0].toUpperCase()
-                                      : 'U',
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 14,
-                                  ),
                                 ),
                               ),
                             ),
-                            const SizedBox(width: 10),
-                            Text(documentName,
+                            if (selectedDocumentType !=
+                                _aiClassification!.type.displayName)
+                              GestureDetector(
+                                onTap: () {
+                                  setState(() {
+                                    selectedDocumentType =
+                                        _aiClassification!.type.displayName;
+                                  });
+                                },
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: _aiClassification!.confidenceColor
+                                        .withOpacity(0.15),
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  child: const Text('Apply',
+                                      style: TextStyle(fontSize: 11)),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+
+                    // Extracted keys summary
+                    _buildDialogExtractedKeys(),
+
+                    // User name (readonly)
+                    _buildFieldLabel('Scanned by'),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: Colors.grey[100],
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 28,
+                            height: 28,
+                            decoration: const BoxDecoration(
+                              color: Color(0xFF6868AC),
+                              shape: BoxShape.circle,
+                            ),
+                            child: Center(
+                              child: Text(
+                                documentName.isNotEmpty
+                                    ? documentName[0].toUpperCase()
+                                    : 'U',
                                 style: const TextStyle(
-                                    fontWeight: FontWeight.w500)),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-
-                      // Document type selector
-                      _buildFieldLabel('Document type'),
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 2),
-                        decoration: BoxDecoration(
-                          color: Colors.grey[100],
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: DropdownButtonHideUnderline(
-                          child: DropdownButton<String>(
-                            value: selectedDocumentType,
-                            icon: const Icon(Icons.keyboard_arrow_down,
-                                color: Color(0xFF6868AC)),
-                            isExpanded: true,
-                            items: [
-                              'Payroll',
-                              'Memo',
-                              'Travel Order',
-                              'Activity Design',
-                              'Purchase Request',
-                              'Purchase Order',
-                              'Advisory',
-                              'Announcement',
-                            ].map((String value) {
-                              return DropdownMenuItem<String>(
-                                value: value,
-                                child: Text(value),
-                              );
-                            }).toList(),
-                            onChanged: (String? newValue) {
-                              if (newValue != null) {
-                                setState(() {
-                                  selectedDocumentType = newValue;
-                                });
-                              }
-                            },
-                          ),
-                        ),
-                      ),
-
-                      // ═══════════════════════════════════════════
-                      // DIVIDER
-                      // ═══════════════════════════════════════════
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 16),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: Divider(
-                                  color: Colors.grey.shade300, thickness: 1),
-                            ),
-                            Padding(
-                              padding:
-                                  const EdgeInsets.symmetric(horizontal: 8),
-                              child: Icon(Icons.arrow_downward,
-                                  size: 16, color: Colors.grey.shade400),
-                            ),
-                            Expanded(
-                              child: Divider(
-                                  color: Colors.grey.shade300, thickness: 1),
-                            ),
-                          ],
-                        ),
-                      ),
-
-                      // ═══════════════════════════════════════════
-                      // SECTION 2: Routing
-                      // ═══════════════════════════════════════════
-                      _buildSectionHeader(
-                        icon: Icons.send_outlined,
-                        label: 'Route to Department',
-                        stepNumber: '2',
-                      ),
-                      const SizedBox(height: 10),
-
-                      // ── Payroll fixed route ──
-                      if (isPayrollFixedRoute) ...[
-                        Container(
-                          padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(
-                            color: Colors.deepPurple.shade50,
-                            borderRadius: BorderRadius.circular(10),
-                            border: Border.all(
-                                color: Colors.deepPurple.shade200),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  Icon(Icons.route,
-                                      color: Colors.deepPurple.shade700,
-                                      size: 18),
-                                  const SizedBox(width: 6),
-                                  Text('Fixed Payroll Route',
-                                      style: TextStyle(
-                                          fontWeight: FontWeight.w700,
-                                          color: Colors.deepPurple.shade800,
-                                          fontSize: 13)),
-                                ],
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 14,
+                                ),
                               ),
-                              const SizedBox(height: 8),
-                              // Compact route display
-                              Wrap(
-                                spacing: 4,
-                                runSpacing: 4,
-                                crossAxisAlignment: WrapCrossAlignment.center,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Text(documentName,
+                              style:
+                                  const TextStyle(fontWeight: FontWeight.w500)),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+
+                    // Document type selector
+                    _buildFieldLabel('Document type'),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.grey[100],
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<String>(
+                          value: selectedDocumentType,
+                          icon: const Icon(Icons.keyboard_arrow_down,
+                              color: Color(0xFF6868AC)),
+                          isExpanded: true,
+                          items: [
+                            'Payroll',
+                            'Memo',
+                            'Travel Order',
+                            'Activity Design',
+                            'Purchase Request',
+                            'Purchase Order',
+                            'Advisory',
+                            'Announcement',
+                          ].map((String value) {
+                            return DropdownMenuItem<String>(
+                              value: value,
+                              child: Text(value),
+                            );
+                          }).toList(),
+                          onChanged: (String? newValue) {
+                            if (newValue != null) {
+                              setState(() {
+                                selectedDocumentType = newValue;
+                                final supportsMultiSendByType =
+                                    ['Memo', 'Announcement'].contains(newValue);
+                                if (!supportsMultiSendByType &&
+                                    isMultiSendMode) {
+                                  isMultiSendMode = false;
+                                  selectedDepartments.clear();
+                                }
+                              });
+                            }
+                          },
+                        ),
+                      ),
+                    ),
+
+                    // ═══════════════════════════════════════════
+                    // DIVIDER
+                    // ═══════════════════════════════════════════
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Divider(
+                                color: Colors.grey.shade300, thickness: 1),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                            child: Icon(Icons.arrow_downward,
+                                size: 16, color: Colors.grey.shade400),
+                          ),
+                          Expanded(
+                            child: Divider(
+                                color: Colors.grey.shade300, thickness: 1),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    // ═══════════════════════════════════════════
+                    // SECTION 2: Routing
+                    // ═══════════════════════════════════════════
+                    _buildSectionHeader(
+                      icon: Icons.send_outlined,
+                      label: 'Route to Department',
+                      stepNumber: '2',
+                    ),
+                    const SizedBox(height: 10),
+
+                    // ── Payroll fixed route ──
+                    if (isPayrollFixedRoute) ...[
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: Colors.deepPurple.shade50,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: Colors.deepPurple.shade200),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.route,
+                                    color: Colors.deepPurple.shade700,
+                                    size: 18),
+                                const SizedBox(width: 6),
+                                Text('Fixed Payroll Route',
+                                    style: TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                        color: Colors.deepPurple.shade800,
+                                        fontSize: 13)),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            // Compact route display
+                            SingleChildScrollView(
+                              scrollDirection: Axis.horizontal,
+                              child: Row(
                                 children: [
                                   for (int i = 0;
                                       i < payrollRoute.length;
@@ -2487,219 +2503,243 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                                           horizontal: 8, vertical: 4),
                                       decoration: BoxDecoration(
                                         color: Colors.deepPurple.shade100,
-                                        borderRadius:
-                                            BorderRadius.circular(6),
+                                        borderRadius: BorderRadius.circular(6),
                                       ),
                                       child: Text(payrollRoute[i],
                                           style: TextStyle(
                                               fontSize: 11,
                                               fontWeight: FontWeight.w600,
-                                              color: Colors
-                                                  .deepPurple.shade700)),
+                                              color:
+                                                  Colors.deepPurple.shade700)),
                                     ),
                                     if (i < payrollRoute.length - 1)
-                                      Icon(Icons.arrow_forward,
-                                          size: 14,
-                                          color:
-                                              Colors.deepPurple.shade300),
+                                      Padding(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 4),
+                                        child: Icon(Icons.arrow_forward,
+                                            size: 14,
+                                            color: Colors.deepPurple.shade300),
+                                      ),
                                   ],
                                 ],
                               ),
-                              const SizedBox(height: 8),
-                              Row(
-                                children: [
-                                  SizedBox(
-                                    height: 28,
-                                    child: Switch(
-                                      value: useCustomRoute,
-                                      activeThumbColor:
-                                          Colors.deepPurple.shade600,
-                                      onChanged: (value) {
-                                        setState(
-                                            () => useCustomRoute = value);
-                                      },
-                                    ),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Text('Use custom route',
-                                      style: TextStyle(
-                                          fontSize: 12,
-                                          color:
-                                              Colors.deepPurple.shade600)),
-                                ],
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                      ],
-
-                      // ── Multi-send toggle (Memo/Announcement) ──
-                      if (supportsMultiSend) ...[
-                        Container(
-                          padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(
-                            color: Colors.orange.shade50,
-                            borderRadius: BorderRadius.circular(8),
-                            border:
-                                Border.all(color: Colors.orange.shade200),
-                          ),
-                          child: Row(
-                            children: [
-                              Icon(Icons.send_to_mobile,
-                                  color: Colors.orange.shade700, size: 18),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  isMultiSendMode
-                                      ? 'Multi-Send: Multiple departments'
-                                      : 'Single department',
-                                  style: TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.orange.shade800),
-                                ),
-                              ),
-                              SizedBox(
-                                height: 28,
-                                child: Switch(
-                                  value: isMultiSendMode,
-                                  activeThumbColor:
-                                      Colors.orange.shade700,
-                                  onChanged: (val) {
-                                    setState(() {
-                                      isMultiSendMode = val;
-                                      if (!val) selectedDepartments.clear();
-                                    });
-                                  },
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                      ],
-
-                      // ── Multi-select department list ──
-                      if (supportsMultiSend && isMultiSendMode) ...[
-                        Container(
-                          constraints:
-                              const BoxConstraints(maxHeight: 180),
-                          decoration: BoxDecoration(
-                            border: Border.all(
-                                color: Colors.orange.shade200),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: SingleChildScrollView(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
+                            ),
+                            const SizedBox(height: 8),
+                            Row(
                               children: [
-                                CheckboxListTile(
-                                  title: Text(
-                                    selectedDepartments.length ==
-                                            departments.length
-                                        ? 'Deselect All'
-                                        : 'Select All',
-                                    style: const TextStyle(
-                                        fontWeight: FontWeight.w600,
-                                        fontSize: 13),
+                                SizedBox(
+                                  height: 28,
+                                  child: Switch(
+                                    value: useCustomRoute,
+                                    activeThumbColor:
+                                        Colors.deepPurple.shade600,
+                                    onChanged: (value) {
+                                      setState(() => useCustomRoute = value);
+                                    },
                                   ),
-                                  value: selectedDepartments.length ==
-                                      departments.length,
+                                ),
+                                const SizedBox(width: 4),
+                                Text('Use custom route',
+                                    style: TextStyle(
+                                        fontSize: 12,
+                                        color: Colors.deepPurple.shade600)),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+
+                    // ── Multi-send toggle (Memo/Announcement) ──
+                    if (supportsMultiSend) ...[
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: Colors.orange.shade50,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.orange.shade200),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.send_to_mobile,
+                                color: Colors.orange.shade700, size: 18),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                isMultiSendMode
+                                    ? 'Multi-Send: Multiple departments'
+                                    : 'Single department',
+                                style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.orange.shade800),
+                              ),
+                            ),
+                            SizedBox(
+                              height: 28,
+                              child: Switch(
+                                value: isMultiSendMode,
+                                activeThumbColor: Colors.orange.shade700,
+                                onChanged: (val) {
+                                  setState(() {
+                                    isMultiSendMode = val;
+                                    if (!val) selectedDepartments.clear();
+                                  });
+                                },
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+
+                    // ── Multi-select department list ──
+                    if (supportsMultiSend && isMultiSendMode) ...[
+                      Container(
+                        constraints:
+                            BoxConstraints(maxHeight: multiSelectMaxHeight),
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.orange.shade200),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: SingleChildScrollView(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              CheckboxListTile(
+                                title: Text(
+                                  selectedDepartments.length ==
+                                          departments.length
+                                      ? 'Deselect All'
+                                      : 'Select All',
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                      fontSize: 13),
+                                ),
+                                value: selectedDepartments.length ==
+                                    departments.length,
+                                activeColor: Colors.orange.shade700,
+                                dense: true,
+                                onChanged: (val) {
+                                  setState(() {
+                                    if (val == true) {
+                                      selectedDepartments =
+                                          Set<String>.from(departments);
+                                    } else {
+                                      selectedDepartments.clear();
+                                    }
+                                  });
+                                },
+                              ),
+                              const Divider(height: 1),
+                              ...departments.map((dept) {
+                                return CheckboxListTile(
+                                  title: Text(dept,
+                                      style: const TextStyle(fontSize: 13)),
+                                  value: selectedDepartments.contains(dept),
                                   activeColor: Colors.orange.shade700,
                                   dense: true,
                                   onChanged: (val) {
                                     setState(() {
                                       if (val == true) {
-                                        selectedDepartments =
-                                            Set<String>.from(departments);
+                                        selectedDepartments.add(dept);
                                       } else {
-                                        selectedDepartments.clear();
+                                        selectedDepartments.remove(dept);
                                       }
                                     });
                                   },
-                                ),
-                                const Divider(height: 1),
-                                ...departments.map((dept) {
-                                  return CheckboxListTile(
-                                    title: Text(dept,
-                                        style:
-                                            const TextStyle(fontSize: 13)),
-                                    value: selectedDepartments
-                                        .contains(dept),
-                                    activeColor: Colors.orange.shade700,
-                                    dense: true,
-                                    onChanged: (val) {
-                                      setState(() {
-                                        if (val == true) {
-                                          selectedDepartments.add(dept);
-                                        } else {
-                                          selectedDepartments.remove(dept);
-                                        }
-                                      });
-                                    },
-                                  );
-                                }),
-                              ],
-                            ),
+                                );
+                              }),
+                            ],
                           ),
                         ),
-                        if (selectedDepartments.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 6),
-                            child: Text(
-                              'Selected: ${selectedDepartments.join(", ")}',
-                              style: TextStyle(
-                                  fontSize: 11,
-                                  color: Colors.grey.shade600),
-                            ),
+                      ),
+                      if (selectedDepartments.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 6),
+                          child: Text(
+                            'Selected: ${selectedDepartments.join(", ")}',
+                            style: TextStyle(
+                                fontSize: 11, color: Colors.grey.shade600),
                           ),
-                      ]
+                        ),
+                    ]
 
-                      // ── Normal single-department routing ──
-                      else if (!isPayrollFixedRoute || useCustomRoute) ...[
-                        _buildFieldLabel('Next Department'),
+                    // ── Normal single-department routing ──
+                    else if (!isPayrollFixedRoute || useCustomRoute) ...[
+                      _buildFieldLabel('Next Department'),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        decoration: BoxDecoration(
+                          border: Border.all(
+                              color: const Color(0xFF6868AC).withOpacity(0.25)),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: DropdownButtonHideUnderline(
+                          child: DropdownButton<String>(
+                            value: departments.contains(selectedDepartment)
+                                ? selectedDepartment
+                                : (departments.isNotEmpty
+                                    ? departments.first
+                                    : null),
+                            isExpanded: true,
+                            icon: const Icon(Icons.arrow_drop_down,
+                                color: Color(0xFF6868AC)),
+                            items: departments
+                                .map((d) =>
+                                    DropdownMenuItem(value: d, child: Text(d)))
+                                .toList(),
+                            onChanged: (val) {
+                              if (val != null) {
+                                setState(() => selectedDepartment = val);
+                              }
+                            },
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      _buildFieldLabel('End Location'),
+                      if (isRerouteFlow) ...[
                         Container(
-                          padding:
-                              const EdgeInsets.symmetric(horizontal: 12),
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 12),
                           decoration: BoxDecoration(
-                            border: Border.all(
-                                color: const Color(0xFF6868AC)
-                                    .withOpacity(0.25)),
+                            color: const Color(0xFFF5F5FA),
                             borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                                color: const Color(0xFFE0E0EA), width: 1),
                           ),
-                          child: DropdownButtonHideUnderline(
-                            child: DropdownButton<String>(
-                              value: departments.contains(selectedDepartment)
-                                  ? selectedDepartment
-                                  : (departments.isNotEmpty
-                                      ? departments.first
-                                      : null),
-                              isExpanded: true,
-                              icon: const Icon(Icons.arrow_drop_down,
-                                  color: Color(0xFF6868AC)),
-                              items: departments
-                                  .map((d) => DropdownMenuItem(
-                                      value: d, child: Text(d)))
-                                  .toList(),
-                              onChanged: (val) {
-                                if (val != null) {
-                                  setState(() =>
-                                      selectedDepartment = val);
-                                }
-                              },
-                            ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.lock_outline,
+                                  size: 16, color: Color(0xFF6868AC)),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  selectedEndLocation.trim().isNotEmpty
+                                      ? selectedEndLocation
+                                      : 'Locked by tracking',
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFF4C4C7A),
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                        const SizedBox(height: 12),
-
-                        _buildFieldLabel('End Location'),
+                      ] else ...[
                         Container(
-                          padding:
-                              const EdgeInsets.symmetric(horizontal: 12),
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
                           decoration: BoxDecoration(
                             border: Border.all(
-                                color: const Color(0xFF6868AC)
-                                    .withOpacity(0.25)),
+                                color:
+                                    const Color(0xFF6868AC).withOpacity(0.25)),
                             borderRadius: BorderRadius.circular(8),
                           ),
                           child: DropdownButtonHideUnderline(
@@ -2718,8 +2758,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                                   .toList(),
                               onChanged: (val) {
                                 if (val != null) {
-                                  setState(() =>
-                                      selectedEndLocation = val);
+                                  setState(() => selectedEndLocation = val);
                                 }
                               },
                             ),
@@ -2727,7 +2766,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                         ),
                       ],
                     ],
-                  ),
+                  ],
                 ),
               ),
               actions: [
@@ -2743,7 +2782,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                     foregroundColor: Colors.grey.shade600,
                   ),
                 ),
-                const Spacer(),
                 // Save & Upload button
                 ElevatedButton.icon(
                   onPressed: (supportsMultiSend &&
@@ -2763,6 +2801,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                             documentType: selectedDocumentType,
                             selectedDepartment: selectedDepartment,
                             selectedEndLocation: selectedEndLocation,
+                            isRerouteFlow: isRerouteFlow,
+                            lockedEndLocation: lockedEndLocation,
                             isPayrollFixedRoute: isPayrollFixedRoute,
                             useCustomRoute: useCustomRoute,
                             payrollRoute: payrollRoute,
@@ -2819,13 +2859,64 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         const SizedBox(width: 8),
         Icon(icon, size: 18, color: const Color(0xFF6868AC)),
         const SizedBox(width: 6),
-        Text(label,
-            style: const TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w700,
-                color: Color(0xFF6868AC))),
+        Expanded(
+          child: Text(label,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF6868AC))),
+        ),
       ],
     );
+  }
+
+  Future<String?> _resolveExistingEndLocationForRouting() async {
+    final trackingId = (_routingTrackingId ?? '').trim();
+    final mobileTimestamp = (_routingMobileTimestamp ?? '').trim();
+    final docHash = (_currentDocument?.docHash ?? '').trim();
+    if (trackingId.isEmpty && mobileTimestamp.isEmpty && docHash.isEmpty) {
+      return null;
+    }
+
+    try {
+      final String trackingUrl = await _resolveServerPath(
+        '/lib/OCR(UPDATED)/tracking.php',
+        fallback:
+            '${ServerService.defaultServerRoot}/lib/OCR(UPDATED)/tracking.php',
+      );
+
+      final int? tid = int.tryParse(trackingId);
+      Uri uri;
+      if (tid != null && tid > 0) {
+        uri = Uri.parse(trackingUrl).replace(queryParameters: {
+          'action': 'doc_detail',
+          'id': tid.toString(),
+        });
+      } else {
+        uri = Uri.parse(trackingUrl).replace(queryParameters: {
+          'action': 'resolve_identity',
+          if (mobileTimestamp.isNotEmpty) 'mobile_timestamp': mobileTimestamp,
+          if (docHash.isNotEmpty) 'doc_hash': docHash,
+        });
+      }
+
+      final resp = await http.get(uri).timeout(const Duration(seconds: 8));
+      if (resp.statusCode >= 400 || resp.body.isEmpty) return null;
+
+      final decoded = jsonDecode(resp.body);
+      if (decoded is! Map) return null;
+
+      final Map source =
+          (decoded['doc'] is Map) ? (decoded['doc'] as Map) : decoded;
+      final String resolved =
+          (source['end_location'] ?? source['endLocation'] ?? '')
+              .toString()
+              .trim();
+      return resolved.isNotEmpty ? resolved : null;
+    } catch (_) {
+      return null;
+    }
   }
 
   /// Helper: field label
@@ -3009,6 +3100,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     required String documentType,
     required String selectedDepartment,
     required String selectedEndLocation,
+    required bool isRerouteFlow,
+    String? lockedEndLocation,
     required bool isPayrollFixedRoute,
     required bool useCustomRoute,
     required List<String> payrollRoute,
@@ -3026,7 +3119,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     final timestamp = _currentDocument?.mobileTimestamp ?? '';
     final firstImagePath = _currentDocument?.imagePath ?? '';
     final textPath = firstImagePath.isNotEmpty
-        ? firstImagePath.replaceFirst(RegExp(r'\.(jpg|jpeg|png)$', caseSensitive: false), '.txt')
+        ? firstImagePath.replaceFirst(
+            RegExp(r'\.(jpg|jpeg|png)$', caseSensitive: false), '.txt')
         : '';
     String? generatedPdfPath;
     try {
@@ -3035,9 +3129,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       if (await pdfFile.exists()) generatedPdfPath = pdfFile.path;
     } catch (_) {}
 
-    final uploadFilePath = (generatedPdfPath != null && generatedPdfPath.isNotEmpty)
-        ? generatedPdfPath
-        : firstImagePath;
+    final uploadFilePath =
+        (generatedPdfPath != null && generatedPdfPath.isNotEmpty)
+            ? generatedPdfPath
+            : firstImagePath;
 
     // Show uploading progress
     if (mounted) {
@@ -3061,7 +3156,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     }
 
     // Handle multi-send (Memo/Announcement)
-    if (supportsMultiSend && isMultiSendMode && selectedDepartments.isNotEmpty) {
+    if (supportsMultiSend &&
+        isMultiSendMode &&
+        selectedDepartments.isNotEmpty) {
       if (documentType == 'Announcement') {
         int successCount = 0;
         int failCount = 0;
@@ -3076,13 +3173,18 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             endLocation: dept,
             isBroadcast: true,
           );
-          if (ok) successCount++; else failCount++;
+          if (ok) {
+            successCount++;
+          } else {
+            failCount++;
+          }
         }
         if (!mounted) return;
         if (failCount == 0) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('✅ Announcement sent to $successCount department(s)!'),
+              content:
+                  Text('✅ Announcement sent to $successCount department(s)!'),
               backgroundColor: Colors.green,
             ),
           );
@@ -3114,7 +3216,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         if (ok) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('✅ Memo routed to ${selectedDepartments.length} department(s)! Starting with $firstDept'),
+              content: Text(
+                  '✅ Memo routed to ${selectedDepartments.length} department(s)! Starting with $firstDept'),
               backgroundColor: Colors.green,
             ),
           );
@@ -3159,6 +3262,10 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       }
     } else {
       // Normal single-send
+      final String effectiveEndLocation =
+          (isRerouteFlow && (lockedEndLocation ?? '').trim().isNotEmpty)
+              ? lockedEndLocation!.trim()
+              : selectedEndLocation;
       final ok = await _uploadToTrackingPhp(
         timestamp: timestamp,
         documentName: documentName,
@@ -3166,7 +3273,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         uploadFilePath: uploadFilePath,
         textPath: textPath,
         nextDepartment: selectedDepartment,
-        endLocation: selectedEndLocation,
+        endLocation: effectiveEndLocation,
       );
       if (!mounted) return;
       if (ok) {

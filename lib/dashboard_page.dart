@@ -2760,6 +2760,19 @@ class _DashboardPageState extends State<DashboardPage>
                 },
               ),
               const SizedBox(height: 8),
+              InputDecorator(
+                decoration: const InputDecoration(
+                  labelText: 'End Location',
+                  prefixIcon: Icon(Icons.lock_outline),
+                ),
+                child: Text(
+                  endCtrl.text.trim().isNotEmpty
+                      ? endCtrl.text.trim()
+                      : initialReceiverDept,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ),
+              const SizedBox(height: 8),
               TextField(
                 controller: typeCtrl,
                 readOnly: true,
@@ -8372,12 +8385,14 @@ class _DashboardPageState extends State<DashboardPage>
                                           return;
                                         }
 
-                                        if (!hasIdentity) {
+                                        final bool hasRouteAnchor =
+                                            (id ?? 0) > 0;
+                                        if (!hasIdentity && !hasRouteAnchor) {
                                           if (mounted) {
                                             ScaffoldMessenger.of(context)
                                                 .showSnackBar(const SnackBar(
                                                     content: Text(
-                                                        'Cannot route: missing tracking info. Open from a server notification to route.')));
+                                                        'Cannot route: missing tracking info and route anchor. Open from server notification details, then retry.')));
                                           }
                                           return;
                                         }
@@ -9236,10 +9251,22 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
                           labelText: 'Next Department',
                         ),
                       ),
-                      // End Location field removed per user request
                     ],
                   );
                 },
+              ),
+              const SizedBox(height: 8),
+              InputDecorator(
+                decoration: const InputDecoration(
+                  labelText: 'End Location',
+                  prefixIcon: Icon(Icons.lock_outline),
+                ),
+                child: Text(
+                  endCtrl.text.trim().isNotEmpty
+                      ? endCtrl.text.trim()
+                      : initialReceiverDept,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
               ),
               const SizedBox(height: 8),
               TextField(
@@ -10213,8 +10240,11 @@ class _RecentUploadPageState extends State<RecentUploadPage> {
         (numericTrackingId != null && numericTrackingId > 0) ||
             (normalize(docHash) != null) ||
             (normalize(mobileTimestamp) != null);
-    final bool canRoute =
-        (recipientDepartment ?? '').trim().isNotEmpty && hasIdentity;
+    final int activityId =
+        int.tryParse((activity['id'] ?? '').toString().trim()) ?? 0;
+    final bool hasRouteAnchor = activityId > 0;
+    final bool canRoute = (recipientDepartment ?? '').trim().isNotEmpty &&
+        (hasIdentity || hasRouteAnchor);
     final bool isEncrypted = _isActivityEncrypted(activity);
 
     await showDialog<void>(

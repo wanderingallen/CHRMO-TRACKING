@@ -287,8 +287,43 @@ try {
     }
   }
 
+  // If we only have tracking_id, recover missing stable identity fields from tracking.
+  if ($has_tracking_id && ($mobile_timestamp === '' || $file_path === '' || $end_location === '')) {
+    $tid = (int)$tracking_id;
+    $tsel = $conn->prepare("SELECT mobile_timestamp, file_path, end_location FROM tracking WHERE id = ? LIMIT 1");
+    if ($tsel) {
+      $tsel->bind_param('i', $tid);
+      if ($tsel->execute()) {
+        $tres = $tsel->get_result();
+        if ($tres && ($trow = $tres->fetch_assoc())) {
+          $tmts = trim((string)($trow['mobile_timestamp'] ?? ''));
+          $tpath = trim((string)($trow['file_path'] ?? ''));
+          $tend = trim((string)($trow['end_location'] ?? ''));
+          if ($mobile_timestamp === '' && $tmts !== '') {
+            $mobile_timestamp = $tmts;
+          }
+          if ($file_path === '' && $tpath !== '') {
+            $file_path = $tpath;
+          }
+          if ($end_location === '' && $tend !== '') {
+            $end_location = $tend;
+          }
+          if ($debug) {
+            $debug_in['resolved_from_tracking'] = [
+              'tracking_id' => $tracking_id,
+              'mobile_timestamp' => $mobile_timestamp,
+              'file_path' => $file_path,
+              'end_location' => $end_location,
+            ];
+          }
+        }
+      }
+      $tsel->close();
+    }
+  }
+
   if ($mobile_timestamp === '' && !$has_tracking_id && !$has_notification_id) {
-    json_error('Missing required fields', 400, $debug ? ['debug_in' => $debug_in] : null);
+    json_error('Missing routing identity. Provide at least one of: tracking_id, mobile_timestamp, or notification_id.', 400, $debug ? ['debug_in' => $debug_in] : null);
   }
   if ($receiver_username === '' && $receiver_department === '') {
     json_error('Provide receiver_username or receiver_department', 400, $debug ? ['debug_in' => $debug_in] : null);
