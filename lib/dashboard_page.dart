@@ -7966,61 +7966,61 @@ class _DashboardPageState extends State<DashboardPage>
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            title,
-                            style: TextStyle(
-                              fontFamily: 'Poppins',
-                              fontSize: 14,
-                              fontWeight: FontWeight.w600,
-                              color: Theme.of(context).colorScheme.onSurface,
-                              height: 1.3,
-                            ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        // Status badge for Returned/Pending/In Review
-                        if (status != null && status.isNotEmpty) ...[
-                          const SizedBox(width: 6),
-                          _buildStatusBadge(status),
-                        ],
-                        if (isEncrypted) ...[
-                          const SizedBox(width: 8),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 8, vertical: 3),
-                            decoration: BoxDecoration(
-                              color: Colors.green.shade600.withOpacity(0.12),
-                              borderRadius: BorderRadius.circular(100),
-                              border: Border.all(
-                                  color:
-                                      Colors.green.shade600.withOpacity(0.25),
-                                  width: 1),
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(Icons.lock,
-                                    size: 10, color: Colors.green.shade600),
-                                const SizedBox(width: 3),
-                                Text(
-                                  'Encrypted',
-                                  style: TextStyle(
-                                    fontFamily: 'Poppins',
-                                    fontSize: 10,
-                                    color: Colors.green.shade600,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ],
-                      ],
+                    Text(
+                      title,
+                      style: TextStyle(
+                        fontFamily: 'Poppins',
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: Theme.of(context).colorScheme.onSurface,
+                        height: 1.3,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
+                    if ((status != null && status.isNotEmpty) || isEncrypted)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Wrap(
+                          spacing: 6,
+                          runSpacing: 4,
+                          children: [
+                            if (status != null && status.isNotEmpty)
+                              _buildStatusBadge(status),
+                            if (isEncrypted)
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 8, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color:
+                                      Colors.green.shade600.withOpacity(0.12),
+                                  borderRadius: BorderRadius.circular(100),
+                                  border: Border.all(
+                                      color: Colors.green.shade600
+                                          .withOpacity(0.25),
+                                      width: 1),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.lock,
+                                        size: 10, color: Colors.green.shade600),
+                                    const SizedBox(width: 3),
+                                    Text(
+                                      'Encrypted',
+                                      style: TextStyle(
+                                        fontFamily: 'Poppins',
+                                        fontSize: 10,
+                                        color: Colors.green.shade600,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
                     const SizedBox(height: 4),
                     Text(
                       subtitle,
@@ -8041,14 +8041,14 @@ class _DashboardPageState extends State<DashboardPage>
                             effectiveHolderDept.isNotEmpty) &&
                         (status == null || status != 'confirmed')) ...[
                       const SizedBox(height: 6),
-                      OverflowBar(
-                        alignment: MainAxisAlignment.start,
+                      Wrap(
                         spacing: 6,
-                        overflowSpacing: 6,
+                        runSpacing: 6,
+                        crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
                           // Receive (first)
                           SizedBox(
-                            width: 96,
+                            height: 36,
                             child: ElevatedButton(
                               onPressed: (alreadyReceived ||
                                       _receivingKeys.contains(receiveKey))
@@ -8248,7 +8248,7 @@ class _DashboardPageState extends State<DashboardPage>
                                       }
                                     },
                               style: ElevatedButton.styleFrom(
-                                minimumSize: const Size(0, 36),
+                                minimumSize: const Size(88, 36),
                                 padding: const EdgeInsets.symmetric(
                                     horizontal: 8, vertical: 6),
                                 backgroundColor: Colors.green.shade700,
@@ -8263,20 +8263,18 @@ class _DashboardPageState extends State<DashboardPage>
                                         color: Colors.white,
                                       ),
                                     )
-                                  : const FittedBox(
-                                      fit: BoxFit.scaleDown,
-                                      child: Text(
-                                        'Receive',
-                                        style: TextStyle(
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w500),
-                                      ),
+                                  : const Text(
+                                      'Receive',
+                                      style: TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w500),
                                     ),
                             ),
                           ),
                           if (!isAnnouncement) ...[
                             // Icon-only capture button for returned documents
                             if (serverStatus == 'returned') ...[
+                              const SizedBox(width: 6),
                               SizedBox(
                                 width: 40,
                                 height: 36,
@@ -8332,9 +8330,10 @@ class _DashboardPageState extends State<DashboardPage>
                                 ),
                               ),
                             ],
+                            const SizedBox(width: 6),
                             // Route/Update (second) - memos only
                             SizedBox(
-                              width: 96,
+                              height: 36,
                               child: OutlinedButton(
                                 onPressed: alreadyReceived
                                     ? () async {
@@ -8401,7 +8400,7 @@ class _DashboardPageState extends State<DashboardPage>
                                       }
                                     : null,
                                 style: OutlinedButton.styleFrom(
-                                  minimumSize: const Size(0, 36),
+                                  minimumSize: const Size(88, 36),
                                   padding: const EdgeInsets.symmetric(
                                       horizontal: 8, vertical: 6),
                                   foregroundColor: alreadyReceived
@@ -8432,6 +8431,7 @@ class _DashboardPageState extends State<DashboardPage>
                                       alreadyReceived
                                           ? (atEndLocation ? 'Update' : 'Route')
                                           : 'Locked',
+                                      softWrap: false,
                                       style: TextStyle(
                                         fontSize: 12,
                                         fontWeight: FontWeight.w500,
