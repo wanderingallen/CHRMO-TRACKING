@@ -3342,7 +3342,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       final String effectiveEndLocation =
           (isRerouteFlow && (lockedEndLocation ?? '').trim().isNotEmpty)
               ? lockedEndLocation!.trim()
-              : selectedDepartment;
+              : selectedEndLocation;
       final ok = await _uploadToTrackingPhp(
         timestamp: timestamp,
         documentName: documentName,
