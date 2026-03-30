@@ -8041,234 +8041,239 @@ class _DashboardPageState extends State<DashboardPage>
                             effectiveHolderDept.isNotEmpty) &&
                         (status == null || status != 'confirmed')) ...[
                       const SizedBox(height: 6),
-                      Wrap(
-                        spacing: 6,
-                        runSpacing: 6,
-                        crossAxisAlignment: WrapCrossAlignment.center,
+                      Row(
                         children: [
                           // Receive (first)
-                          SizedBox(
-                            height: 36,
-                            child: ElevatedButton(
-                              onPressed: (alreadyReceived ||
-                                      _receivingKeys.contains(receiveKey))
-                                  ? null
-                                  : () async {
-                                      setState(
-                                          () => _receivingKeys.add(receiveKey));
-                                      try {
-                                        final prefs = await SharedPreferences
-                                            .getInstance();
-                                        final myDept = (prefs.getString(
-                                                    'user_department') ??
-                                                '')
-                                            .trim();
-                                        final receiverDept = myDept.isNotEmpty
-                                            ? myDept
-                                            : effectiveHolderDept;
+                          Expanded(
+                            child: SizedBox(
+                              height: 36,
+                              child: ElevatedButton(
+                                onPressed: (alreadyReceived ||
+                                        _receivingKeys.contains(receiveKey))
+                                    ? null
+                                    : () async {
+                                        setState(() =>
+                                            _receivingKeys.add(receiveKey));
+                                        try {
+                                          final prefs = await SharedPreferences
+                                              .getInstance();
+                                          final myDept = (prefs.getString(
+                                                      'user_department') ??
+                                                  '')
+                                              .trim();
+                                          final receiverDept = myDept.isNotEmpty
+                                              ? myDept
+                                              : effectiveHolderDept;
 
-                                        final result = await _markInReview(
-                                          normalizedTrackingId,
-                                          docType: (docType ?? title),
-                                          receiverDepartment: receiverDept,
-                                          endLocation: normalizedEndLocation,
-                                          notificationId: id,
-                                        );
-                                        if (!mounted) return;
-
-                                        final ok = result['ok'] == true;
-
-                                        // Show success/failure feedback
-                                        if (ok) {
-                                          ScaffoldMessenger.of(context)
-                                              .showSnackBar(
-                                            SnackBar(
-                                              content: const Row(
-                                                children: [
-                                                  Icon(Icons.check_circle,
-                                                      color: Colors.white,
-                                                      size: 18),
-                                                  SizedBox(width: 8),
-                                                  Expanded(
-                                                      child: Text(
-                                                          'Document received successfully')),
-                                                ],
-                                              ),
-                                              backgroundColor:
-                                                  Colors.green.shade700,
-                                              duration:
-                                                  const Duration(seconds: 2),
-                                            ),
+                                          final result = await _markInReview(
+                                            normalizedTrackingId,
+                                            docType: (docType ?? title),
+                                            receiverDepartment: receiverDept,
+                                            endLocation: normalizedEndLocation,
+                                            notificationId: id,
                                           );
-                                        } else {
-                                          ScaffoldMessenger.of(context)
-                                              .showSnackBar(
-                                            SnackBar(
-                                              content: const Row(
-                                                children: [
-                                                  Icon(Icons.error_outline,
-                                                      color: Colors.white,
-                                                      size: 18),
-                                                  SizedBox(width: 8),
-                                                  Expanded(
-                                                      child: Text(
-                                                          'Failed to receive document. Please try again.')),
-                                                ],
+                                          if (!mounted) return;
+
+                                          final ok = result['ok'] == true;
+
+                                          // Show success/failure feedback
+                                          if (ok) {
+                                            ScaffoldMessenger.of(context)
+                                                .showSnackBar(
+                                              SnackBar(
+                                                content: const Row(
+                                                  children: [
+                                                    Icon(Icons.check_circle,
+                                                        color: Colors.white,
+                                                        size: 18),
+                                                    SizedBox(width: 8),
+                                                    Expanded(
+                                                        child: Text(
+                                                            'Document received successfully')),
+                                                  ],
+                                                ),
+                                                backgroundColor:
+                                                    Colors.green.shade700,
+                                                duration:
+                                                    const Duration(seconds: 2),
                                               ),
-                                              backgroundColor:
-                                                  Colors.red.shade700,
-                                              duration:
-                                                  const Duration(seconds: 3),
-                                            ),
-                                          );
-                                        }
-
-                                        if (!ok) return;
-
-                                        // Record the local received key to avoid repeat taps.
-                                        setState(() {
-                                          _receivedItemKeys.add(receiveKey);
-                                        });
-
-                                        // Announcements: receiving auto-completes server-side and should
-                                        // immediately disappear from the dashboard.
-                                        if (isAnnouncement) {
-                                          // Best-effort: mark/delete associated notification and remove locally.
-                                          if (id != null && id > 0) {
-                                            try {
-                                              await _updateNotificationStatus(
-                                                  id, 'completed');
-                                            } catch (_) {}
-                                            try {
-                                              await _deleteNotificationById(id);
-                                            } catch (_) {}
+                                            );
+                                          } else {
+                                            ScaffoldMessenger.of(context)
+                                                .showSnackBar(
+                                              SnackBar(
+                                                content: const Row(
+                                                  children: [
+                                                    Icon(Icons.error_outline,
+                                                        color: Colors.white,
+                                                        size: 18),
+                                                    SizedBox(width: 8),
+                                                    Expanded(
+                                                        child: Text(
+                                                            'Failed to receive document. Please try again.')),
+                                                  ],
+                                                ),
+                                                backgroundColor:
+                                                    Colors.red.shade700,
+                                                duration:
+                                                    const Duration(seconds: 3),
+                                              ),
+                                            );
                                           }
 
-                                          if (mounted) {
-                                            setState(() {
-                                              // Remove by activity id if present
-                                              if (id != null) {
+                                          if (!ok) return;
+
+                                          // Record the local received key to avoid repeat taps.
+                                          setState(() {
+                                            _receivedItemKeys.add(receiveKey);
+                                          });
+
+                                          // Announcements: receiving auto-completes server-side and should
+                                          // immediately disappear from the dashboard.
+                                          if (isAnnouncement) {
+                                            // Best-effort: mark/delete associated notification and remove locally.
+                                            if (id != null && id > 0) {
+                                              try {
+                                                await _updateNotificationStatus(
+                                                    id, 'completed');
+                                              } catch (_) {}
+                                              try {
+                                                await _deleteNotificationById(
+                                                    id);
+                                              } catch (_) {}
+                                            }
+
+                                            if (mounted) {
+                                              setState(() {
+                                                // Remove by activity id if present
+                                                if (id != null) {
+                                                  _recentActivity
+                                                      .removeWhere((m) {
+                                                    final mid = m['id'];
+                                                    return mid != null &&
+                                                        mid.toString() ==
+                                                            id.toString();
+                                                  });
+                                                }
+
+                                                // Remove by tracking identity as a fallback
                                                 _recentActivity
                                                     .removeWhere((m) {
-                                                  final mid = m['id'];
-                                                  return mid != null &&
-                                                      mid.toString() ==
-                                                          id.toString();
-                                                });
-                                              }
-
-                                              // Remove by tracking identity as a fallback
-                                              _recentActivity.removeWhere((m) {
-                                                final tid = (m['trackingId'] ??
-                                                        m['tracking_id'] ??
-                                                        '')
-                                                    .toString()
-                                                    .trim();
-                                                if (normalizedTrackingId !=
-                                                        null &&
-                                                    normalizedTrackingId
-                                                        .isNotEmpty &&
-                                                    tid ==
-                                                        normalizedTrackingId) {
-                                                  return true;
-                                                }
-                                                final mts = (m[
-                                                            'mobileTimestamp'] ??
-                                                        m['mobile_timestamp'] ??
-                                                        '')
-                                                    .toString()
-                                                    .trim();
-                                                final dhs = (m['docHash'] ??
-                                                        m['doc_hash'] ??
-                                                        '')
-                                                    .toString()
-                                                    .trim();
-                                                if (normalizedMobileTimestamp !=
-                                                        null &&
-                                                    normalizedMobileTimestamp
-                                                        .isNotEmpty &&
-                                                    mts ==
-                                                        normalizedMobileTimestamp) {
-                                                  return true;
-                                                }
-                                                if (normalizedDocHash != null &&
-                                                    normalizedDocHash
-                                                        .isNotEmpty &&
-                                                    dhs == normalizedDocHash) {
-                                                  return true;
-                                                }
-                                                return false;
-                                              });
-                                            });
-                                          }
-
-                                          // Refresh in background to keep state consistent.
-                                          // (We already removed the card immediately.)
-                                          unawaited(_fetchRecentActivity());
-                                          return;
-                                        }
-
-                                        // Memos: update local status immediately so UI reflects change,
-                                        // then refresh from server in background.
-                                        if (ok && mounted) {
-                                          setState(() {
-                                            for (final item
-                                                in _recentActivity) {
-                                              final tid = (item['trackingId'] ??
-                                                      item['tracking_id'] ??
-                                                      '')
-                                                  .toString()
-                                                  .trim();
-                                              final mid =
-                                                  item['id']?.toString();
-                                              final matchById = id != null &&
-                                                  mid != null &&
-                                                  mid == id.toString();
-                                              final matchByTid =
-                                                  normalizedTrackingId !=
+                                                  final tid = (m[
+                                                              'trackingId'] ??
+                                                          m['tracking_id'] ??
+                                                          '')
+                                                      .toString()
+                                                      .trim();
+                                                  if (normalizedTrackingId !=
                                                           null &&
                                                       normalizedTrackingId
                                                           .isNotEmpty &&
                                                       tid ==
-                                                          normalizedTrackingId;
-                                              if (matchById || matchByTid) {
-                                                item['status'] = 'In Review';
-                                                break;
-                                              }
+                                                          normalizedTrackingId) {
+                                                    return true;
+                                                  }
+                                                  final mts = (m[
+                                                              'mobileTimestamp'] ??
+                                                          m['mobile_timestamp'] ??
+                                                          '')
+                                                      .toString()
+                                                      .trim();
+                                                  final dhs = (m['docHash'] ??
+                                                          m['doc_hash'] ??
+                                                          '')
+                                                      .toString()
+                                                      .trim();
+                                                  if (normalizedMobileTimestamp !=
+                                                          null &&
+                                                      normalizedMobileTimestamp
+                                                          .isNotEmpty &&
+                                                      mts ==
+                                                          normalizedMobileTimestamp) {
+                                                    return true;
+                                                  }
+                                                  if (normalizedDocHash !=
+                                                          null &&
+                                                      normalizedDocHash
+                                                          .isNotEmpty &&
+                                                      dhs ==
+                                                          normalizedDocHash) {
+                                                    return true;
+                                                  }
+                                                  return false;
+                                                });
+                                              });
                                             }
-                                          });
-                                          // Also refresh from server to keep in sync
-                                          unawaited(_fetchRecentActivity());
+
+                                            // Refresh in background to keep state consistent.
+                                            // (We already removed the card immediately.)
+                                            unawaited(_fetchRecentActivity());
+                                            return;
+                                          }
+
+                                          // Memos: update local status immediately so UI reflects change,
+                                          // then refresh from server in background.
+                                          if (ok && mounted) {
+                                            setState(() {
+                                              for (final item
+                                                  in _recentActivity) {
+                                                final tid = (item[
+                                                            'trackingId'] ??
+                                                        item['tracking_id'] ??
+                                                        '')
+                                                    .toString()
+                                                    .trim();
+                                                final mid =
+                                                    item['id']?.toString();
+                                                final matchById = id != null &&
+                                                    mid != null &&
+                                                    mid == id.toString();
+                                                final matchByTid =
+                                                    normalizedTrackingId !=
+                                                            null &&
+                                                        normalizedTrackingId
+                                                            .isNotEmpty &&
+                                                        tid ==
+                                                            normalizedTrackingId;
+                                                if (matchById || matchByTid) {
+                                                  item['status'] = 'In Review';
+                                                  break;
+                                                }
+                                              }
+                                            });
+                                            // Also refresh from server to keep in sync
+                                            unawaited(_fetchRecentActivity());
+                                          }
+                                        } finally {
+                                          if (mounted) {
+                                            setState(() => _receivingKeys
+                                                .remove(receiveKey));
+                                          }
                                         }
-                                      } finally {
-                                        if (mounted) {
-                                          setState(() => _receivingKeys
-                                              .remove(receiveKey));
-                                        }
-                                      }
-                                    },
-                              style: ElevatedButton.styleFrom(
-                                minimumSize: const Size(88, 36),
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 8, vertical: 6),
-                                backgroundColor: Colors.green.shade700,
-                                foregroundColor: Colors.white,
-                              ),
-                              child: _receivingKeys.contains(receiveKey)
-                                  ? const SizedBox(
-                                      width: 16,
-                                      height: 16,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 2,
-                                        color: Colors.white,
+                                      },
+                                style: ElevatedButton.styleFrom(
+                                  minimumSize: const Size(0, 36),
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 6),
+                                  backgroundColor: Colors.green.shade700,
+                                  foregroundColor: Colors.white,
+                                ),
+                                child: _receivingKeys.contains(receiveKey)
+                                    ? const SizedBox(
+                                        width: 16,
+                                        height: 16,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: Colors.white,
+                                        ),
+                                      )
+                                    : const Text(
+                                        'Receive',
+                                        style: TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w500),
                                       ),
-                                    )
-                                  : const Text(
-                                      'Receive',
-                                      style: TextStyle(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w500),
-                                    ),
+                              ),
                             ),
                           ),
                           if (!isAnnouncement) ...[
@@ -8332,118 +8337,127 @@ class _DashboardPageState extends State<DashboardPage>
                             ],
                             const SizedBox(width: 6),
                             // Route/Update (second) - memos only
-                            SizedBox(
-                              height: 36,
-                              child: OutlinedButton(
-                                onPressed: alreadyReceived
-                                    ? () async {
-                                        if (atEndLocation) {
-                                          final tid = int.tryParse(
-                                              (normalizedTrackingId ?? '')
-                                                  .trim());
+                            Expanded(
+                              child: SizedBox(
+                                height: 36,
+                                child: OutlinedButton(
+                                  onPressed: alreadyReceived
+                                      ? () async {
+                                          if (atEndLocation) {
+                                            final tid = int.tryParse(
+                                                (normalizedTrackingId ?? '')
+                                                    .trim());
 
-                                          if (tid != null && tid > 0) {
-                                            await _captureAndUploadFinalDocument(
-                                              trackingId: tid,
-                                              activityId: id,
-                                            );
+                                            if (tid != null && tid > 0) {
+                                              await _captureAndUploadFinalDocument(
+                                                trackingId: tid,
+                                                activityId: id,
+                                              );
+                                              return;
+                                            }
+
+                                            if (normalizedMobileTimestamp !=
+                                                    null ||
+                                                normalizedDocHash != null) {
+                                              await _captureAndUploadFinalDocumentByIdentity(
+                                                mobileTimestamp:
+                                                    normalizedMobileTimestamp,
+                                                docHash: normalizedDocHash,
+                                                activityId: id,
+                                              );
+                                              return;
+                                            }
+
+                                            if (mounted) {
+                                              ScaffoldMessenger.of(context)
+                                                  .showSnackBar(const SnackBar(
+                                                      content: Text(
+                                                          'Cannot update: missing tracking info')));
+                                            }
                                             return;
                                           }
 
-                                          if (normalizedMobileTimestamp !=
-                                                  null ||
-                                              normalizedDocHash != null) {
-                                            await _captureAndUploadFinalDocumentByIdentity(
-                                              mobileTimestamp:
-                                                  normalizedMobileTimestamp,
-                                              docHash: normalizedDocHash,
-                                              activityId: id,
-                                            );
+                                          final bool hasRouteAnchor =
+                                              (id ?? 0) > 0;
+                                          if (!hasIdentity && !hasRouteAnchor) {
+                                            if (mounted) {
+                                              ScaffoldMessenger.of(context)
+                                                  .showSnackBar(const SnackBar(
+                                                      content: Text(
+                                                          'Cannot route: missing tracking info and route anchor. Open from server notification details, then retry.')));
+                                            }
                                             return;
                                           }
 
-                                          if (mounted) {
-                                            ScaffoldMessenger.of(context)
-                                                .showSnackBar(const SnackBar(
-                                                    content: Text(
-                                                        'Cannot update: missing tracking info')));
-                                          }
-                                          return;
+                                          await _openRouteDialogWithDetails(
+                                            initialReceiverDept:
+                                                effectiveHolderDept,
+                                            docType: (docType ?? title),
+                                            fileName: title,
+                                            filePath: resolvedFilePath,
+                                            mobileTimestamp:
+                                                normalizedMobileTimestamp,
+                                            docHash: normalizedDocHash,
+                                            trackingId: normalizedTrackingId,
+                                            activityId: id,
+                                            endLocation: normalizedEndLocation,
+                                            currentHolder: effectiveHolderDept,
+                                          );
                                         }
-
-                                        final bool hasRouteAnchor =
-                                            (id ?? 0) > 0;
-                                        if (!hasIdentity && !hasRouteAnchor) {
-                                          if (mounted) {
-                                            ScaffoldMessenger.of(context)
-                                                .showSnackBar(const SnackBar(
-                                                    content: Text(
-                                                        'Cannot route: missing tracking info and route anchor. Open from server notification details, then retry.')));
-                                          }
-                                          return;
-                                        }
-
-                                        await _openRouteDialogWithDetails(
-                                          initialReceiverDept:
-                                              effectiveHolderDept,
-                                          docType: (docType ?? title),
-                                          fileName: title,
-                                          filePath: resolvedFilePath,
-                                          mobileTimestamp:
-                                              normalizedMobileTimestamp,
-                                          docHash: normalizedDocHash,
-                                          trackingId: normalizedTrackingId,
-                                          activityId: id,
-                                          endLocation: normalizedEndLocation,
-                                          currentHolder: effectiveHolderDept,
-                                        );
-                                      }
-                                    : null,
-                                style: OutlinedButton.styleFrom(
-                                  minimumSize: const Size(88, 36),
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 8, vertical: 6),
-                                  foregroundColor: alreadyReceived
-                                      ? Colors.green.shade700
-                                      : Colors.grey.shade600,
-                                  side: BorderSide(
-                                    color: alreadyReceived
+                                      : null,
+                                  style: OutlinedButton.styleFrom(
+                                    minimumSize: const Size(0, 36),
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 8, vertical: 6),
+                                    foregroundColor: alreadyReceived
                                         ? Colors.green.shade700
-                                        : Colors.grey.shade400,
-                                  ),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  children: [
-                                    if (!alreadyReceived) ...[
-                                      Icon(Icons.lock,
-                                          size: 14,
-                                          color: Colors.grey.shade600),
-                                      const SizedBox(width: 3),
-                                    ] else if (atEndLocation) ...[
-                                      Icon(Icons.camera_alt,
-                                          size: 14,
-                                          color: Colors.green.shade700),
-                                      const SizedBox(width: 3),
-                                    ],
-                                    Text(
-                                      alreadyReceived
-                                          ? (atEndLocation ? 'Update' : 'Route')
-                                          : 'Locked',
-                                      softWrap: false,
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w500,
-                                        color: alreadyReceived
-                                            ? Colors.green.shade700
-                                            : Colors.grey.shade600,
-                                      ),
+                                        : Colors.grey.shade600,
+                                    side: BorderSide(
+                                      color: alreadyReceived
+                                          ? Colors.green.shade700
+                                          : Colors.grey.shade400,
                                     ),
-                                  ],
+                                  ),
+                                  child: FittedBox(
+                                    fit: BoxFit.scaleDown,
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        if (!alreadyReceived) ...[
+                                          Icon(Icons.lock,
+                                              size: 14,
+                                              color: Colors.grey.shade600),
+                                          const SizedBox(width: 3),
+                                        ] else if (atEndLocation) ...[
+                                          Icon(Icons.camera_alt,
+                                              size: 14,
+                                              color: Colors.green.shade700),
+                                          const SizedBox(width: 3),
+                                        ],
+                                        Text(
+                                          alreadyReceived
+                                              ? (atEndLocation
+                                                  ? 'Update'
+                                                  : 'Route')
+                                              : 'Locked',
+                                          softWrap: false,
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w500,
+                                            color: alreadyReceived
+                                                ? Colors.green.shade700
+                                                : Colors.grey.shade600,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
                                 ),
                               ),
                             ),
+                            const SizedBox(width: 6),
                             // Overflow actions (third) - memos only
                             SizedBox(
                               width: 40,
