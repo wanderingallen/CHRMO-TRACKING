@@ -2605,7 +2605,9 @@ class _DashboardPageState extends State<DashboardPage>
     } catch (_) {}
 
     if (resolvedType.isNotEmpty) typeCtrl.text = resolvedType;
-    final endCtrl = TextEditingController(text: resolvedEnd);
+    final lockedEndLocation = resolvedEnd.trim().isNotEmpty
+        ? resolvedEnd.trim()
+        : initialReceiverDept;
 
     // Fixed routing: determine the locked next department.
     // Applies ONLY to payroll document types.
@@ -2760,19 +2762,6 @@ class _DashboardPageState extends State<DashboardPage>
                 },
               ),
               const SizedBox(height: 8),
-              InputDecorator(
-                decoration: const InputDecoration(
-                  labelText: 'End Location',
-                  prefixIcon: Icon(Icons.lock_outline),
-                ),
-                child: Text(
-                  endCtrl.text.trim().isNotEmpty
-                      ? endCtrl.text.trim()
-                      : initialReceiverDept,
-                  style: const TextStyle(fontWeight: FontWeight.w600),
-                ),
-              ),
-              const SizedBox(height: 8),
               TextField(
                 controller: typeCtrl,
                 readOnly: true,
@@ -2799,7 +2788,7 @@ class _DashboardPageState extends State<DashboardPage>
                     child: ElevatedButton(
                       onPressed: () async {
                         final nextDept = deptCtrl.text.trim();
-                        final endLocation = endCtrl.text.trim();
+                        final endLocation = lockedEndLocation;
                         final dtype = typeCtrl.text.trim().isNotEmpty
                             ? typeCtrl.text.trim()
                             : 'Document';
@@ -3973,6 +3962,26 @@ class _DashboardPageState extends State<DashboardPage>
               if ((activity['type'] ?? '').toString().isNotEmpty) ...[
                 const SizedBox(height: 4),
                 Text('Type: ${activity['type']}',
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withOpacity(0.7))),
+              ],
+              if (endLocation.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text('End Location: $endLocation',
+                    style: TextStyle(
+                        fontSize: 12,
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withOpacity(0.7))),
+              ],
+              if (currentHolder.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text('Current Holder: $currentHolder',
                     style: TextStyle(
                         fontSize: 12,
                         color: Theme.of(context)
@@ -9175,8 +9184,9 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
       if (typeFromDb.isNotEmpty) resolvedType = typeFromDb;
     }
     if (resolvedType.isNotEmpty) typeCtrl.text = resolvedType;
-    final endCtrl = TextEditingController(
-        text: resolvedEnd.isNotEmpty ? resolvedEnd : initialReceiverDept);
+    final lockedEndLocation = resolvedEnd.trim().isNotEmpty
+        ? resolvedEnd.trim()
+        : initialReceiverDept;
     // Debug logging removed
 
     await showModalBottomSheet<void>(
@@ -9256,19 +9266,6 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
                 },
               ),
               const SizedBox(height: 8),
-              InputDecorator(
-                decoration: const InputDecoration(
-                  labelText: 'End Location',
-                  prefixIcon: Icon(Icons.lock_outline),
-                ),
-                child: Text(
-                  endCtrl.text.trim().isNotEmpty
-                      ? endCtrl.text.trim()
-                      : initialReceiverDept,
-                  style: const TextStyle(fontWeight: FontWeight.w600),
-                ),
-              ),
-              const SizedBox(height: 8),
               TextField(
                 controller: typeCtrl,
                 readOnly: true,
@@ -9290,7 +9287,7 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
                         Navigator.pop(ctx);
                         await _routeDocument(
                           nextDepartment: deptCtrl.text.trim(),
-                          endLocation: endCtrl.text.trim(),
+                          endLocation: lockedEndLocation,
                           type: typeCtrl.text.trim().isNotEmpty
                               ? typeCtrl.text.trim()
                               : 'Document',
