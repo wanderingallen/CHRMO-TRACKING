@@ -498,7 +498,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'resolve_identity') {
     foreach ($candidates as $cand) {
       $cand = trim((string)$cand);
       if ($cand === '') continue;
-      if ($stmt = $connection->prepare("SELECT id FROM tracking WHERE mobile_timestamp = ? ORDER BY id DESC LIMIT 1")) {
+      if ($stmt = $connection->prepare("SELECT id FROM tracking WHERE mobile_timestamp = ? ORDER BY id ASC LIMIT 1")) {
         $stmt->bind_param('s', $cand);
         if ($stmt->execute()) {
           $res = $stmt->get_result();
@@ -517,7 +517,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'resolve_identity') {
   }
 
   if ($id <= 0 && $docHash !== '') {
-    if ($stmt = $connection->prepare("SELECT id FROM tracking WHERE doc_hash = ? ORDER BY id DESC LIMIT 1")) {
+    if ($stmt = $connection->prepare("SELECT id FROM tracking WHERE doc_hash = ? ORDER BY id ASC LIMIT 1")) {
       $stmt->bind_param('s', $docHash);
       if ($stmt->execute()) {
         $res = $stmt->get_result();
@@ -538,7 +538,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'resolve_identity') {
     if ($base !== '') {
       // Match either exact file_path or anywhere in file_path (handles uploads/archive/...)
       $like = '%' . $base . '%';
-      if ($stmt = $connection->prepare("SELECT id FROM tracking WHERE file_path = ? OR file_path LIKE ? ORDER BY id DESC LIMIT 1")) {
+      if ($stmt = $connection->prepare("SELECT id FROM tracking WHERE file_path = ? OR file_path LIKE ? ORDER BY id ASC LIMIT 1")) {
         $stmt->bind_param('ss', $base, $like);
         if ($stmt->execute()) {
           $res = $stmt->get_result();
