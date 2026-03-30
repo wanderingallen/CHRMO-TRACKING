@@ -2782,17 +2782,50 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                                       .toList(),
                                   onChanged: (val) {
                                     if (val != null) {
-                                      setState(() {
-                                        selectedDepartment = val;
-                                        if (!isRerouteFlow) {
-                                          selectedEndLocation = val;
-                                        }
-                                      });
+                                      setState(() => selectedDepartment = val);
                                     }
                                   },
                                 ),
                               ),
                             ),
+                            if (!isRerouteFlow) ...[
+                              const SizedBox(height: 12),
+                              _buildFieldLabel('End Location'),
+                              Container(
+                                width: double.infinity,
+                                padding:
+                                    const EdgeInsets.symmetric(horizontal: 12),
+                                decoration: BoxDecoration(
+                                  border: Border.all(
+                                      color: const Color(0xFF6868AC)
+                                          .withOpacity(0.25)),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: DropdownButtonHideUnderline(
+                                  child: DropdownButton<String>(
+                                    value: departments
+                                            .contains(selectedEndLocation)
+                                        ? selectedEndLocation
+                                        : (departments.isNotEmpty
+                                            ? departments.first
+                                            : null),
+                                    isExpanded: true,
+                                    icon: const Icon(Icons.arrow_drop_down,
+                                        color: Color(0xFF6868AC)),
+                                    items: departments
+                                        .map((d) => DropdownMenuItem(
+                                            value: d, child: Text(d)))
+                                        .toList(),
+                                    onChanged: (val) {
+                                      if (val != null) {
+                                        setState(
+                                            () => selectedEndLocation = val);
+                                      }
+                                    },
+                                  ),
+                                ),
+                              ),
+                            ],
                           ],
                         ],
                       ),
