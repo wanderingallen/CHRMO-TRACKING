@@ -142,6 +142,7 @@ class _DashboardPageState extends State<DashboardPage>
     String? trackingId,
     String? mobileTimestamp,
     String? docHash,
+    String? filePath,
   }) async {
     try {
       final root = await _getServerRoot();
@@ -158,12 +159,14 @@ class _DashboardPageState extends State<DashboardPage>
       } else {
         final mt = (mobileTimestamp ?? '').trim();
         final dh = (docHash ?? '').trim();
-        if (mt.isEmpty && dh.isEmpty) return null;
+        final fp = (filePath ?? '').trim();
+        if (mt.isEmpty && dh.isEmpty && fp.isEmpty) return null;
         uri = Uri.parse('$root/lib/OCR(UPDATED)/tracking.php').replace(
           queryParameters: {
             'action': 'resolve_identity',
             if (mt.isNotEmpty) 'mobile_timestamp': mt,
             if (dh.isNotEmpty) 'doc_hash': dh,
+            if (fp.isNotEmpty) 'file_path': fp,
           },
         );
       }
@@ -3904,6 +3907,73 @@ class _DashboardPageState extends State<DashboardPage>
           if (filePath.isNotEmpty) 'filePath=$filePath',
           if (fileUrl.isNotEmpty) 'fileUrl=$fileUrl',
         ].join(' | ');
+
+        Future<Map<String, String>> loadDetails() async {
+          String resolvedTrackingId = trackingId;
+          String resolvedType = (activity['type']?.toString() ?? '').trim();
+          String resolvedEndLocation = endLocation;
+          String resolvedCurrentHolder = currentHolder;
+          String resolvedStatus = (activity['status']?.toString() ?? '').trim();
+          final identityFilePath = filePath.isNotEmpty
+              ? filePath
+              : (fileUrl.startsWith('/') ? fileUrl : '');
+
+          if (resolvedTrackingId.isEmpty) {
+            final tid = await _resolveTrackingIdForAction(
+              actionLabel: 'Details',
+              trackingId: null,
+              mobileTimestamp: mobileTs.isNotEmpty ? mobileTs : null,
+              docHash: docHash.isNotEmpty ? docHash : null,
+              filePath: identityFilePath.isNotEmpty ? identityFilePath : null,
+            );
+            if (tid != null && tid.trim().isNotEmpty) {
+              resolvedTrackingId = tid.trim();
+            }
+          }
+
+          final meta = await _fetchRoutingMeta(
+            trackingId:
+                resolvedTrackingId.isNotEmpty ? resolvedTrackingId : null,
+            mobileTimestamp: mobileTs.isNotEmpty ? mobileTs : null,
+            docHash: docHash.isNotEmpty ? docHash : null,
+            filePath: identityFilePath.isNotEmpty ? identityFilePath : null,
+          );
+
+          if (meta != null) {
+            final typeFromDb = (meta['type'] ?? '').toString().trim();
+            if (typeFromDb.isNotEmpty) resolvedType = typeFromDb;
+
+            final endFromDb =
+                (meta['end_location'] ?? meta['endLocation'] ?? '')
+                    .toString()
+                    .trim();
+            if (endFromDb.isNotEmpty) resolvedEndLocation = endFromDb;
+
+            final holderFromDb =
+                (meta['current_holder'] ?? meta['currentHolder'] ?? '')
+                    .toString()
+                    .trim();
+            if (holderFromDb.isNotEmpty) resolvedCurrentHolder = holderFromDb;
+
+            final statusFromDb = (meta['status'] ?? '').toString().trim();
+            if (statusFromDb.isNotEmpty) resolvedStatus = statusFromDb;
+
+            if (resolvedTrackingId.isEmpty) {
+              final idFromDb = (meta['id'] ?? '').toString().trim();
+              if (idFromDb.isNotEmpty) resolvedTrackingId = idFromDb;
+            }
+          }
+
+          return {
+            'trackingId': resolvedTrackingId,
+            'type': resolvedType,
+            'endLocation': resolvedEndLocation,
+            'currentHolder': resolvedCurrentHolder,
+            'status': resolvedStatus,
+          };
+        }
+
+        final detailsFuture = loadDetails();
         return Padding(
           padding: const EdgeInsets.all(16),
           child: Column(
@@ -3949,192 +4019,255 @@ class _DashboardPageState extends State<DashboardPage>
                   style: TextStyle(
                       fontSize: 14,
                       color: Theme.of(context).colorScheme.onSurface)),
-              if (activity['id'] != null) ...[
-                const SizedBox(height: 8),
-                Text('ID: ${activity['id']}',
-                    style: TextStyle(
-                        fontSize: 12,
-                        color: Theme.of(context)
-                            .colorScheme
-                            .onSurface
-                            .withOpacity(0.7))),
-              ],
-              if ((activity['type'] ?? '').toString().isNotEmpty) ...[
-                const SizedBox(height: 4),
-                Text('Type: ${activity['type']}',
-                    style: TextStyle(
-                        fontSize: 12,
-                        color: Theme.of(context)
-                            .colorScheme
-                            .onSurface
-                            .withOpacity(0.7))),
-              ],
-              if (endLocation.isNotEmpty) ...[
-                const SizedBox(height: 4),
-                Text('End Location: $endLocation',
-                    style: TextStyle(
-                        fontSize: 12,
-                        color: Theme.of(context)
-                            .colorScheme
-                            .onSurface
-                            .withOpacity(0.7))),
-              ],
-              if (currentHolder.isNotEmpty) ...[
-                const SizedBox(height: 4),
-                Text('Current Holder: $currentHolder',
-                    style: TextStyle(
-                        fontSize: 12,
-                        color: Theme.of(context)
-                            .colorScheme
-                            .onSurface
-                            .withOpacity(0.7))),
-              ],
-              // Attachments section
-              if (trackingId.isNotEmpty) ...[
-                const SizedBox(height: 16),
-                const Divider(),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    const Row(
-                      children: [
-                        Icon(Icons.attach_file,
-                            size: 18, color: Color(0xFF6868AC)),
-                        SizedBox(width: 8),
-                        Text('Attachments',
-                            style: TextStyle(
-                                fontSize: 14, fontWeight: FontWeight.w600)),
-                      ],
-                    ),
-                    TextButton.icon(
-                      onPressed: () {
-                        Navigator.pop(context);
-                        final id = int.tryParse(trackingId);
-                        if (id != null) {
-                          _addAttachment(id);
-                        } else {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                                content: Text(
-                                    'Cannot add attachment: invalid tracking ID')),
-                          );
-                        }
-                      },
-                      icon: const Icon(Icons.add, size: 18),
-                      label: const Text('Add'),
-                      style: TextButton.styleFrom(
-                        foregroundColor: const Color(0xFF6868AC),
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 4),
-                      ),
-                    ),
-                  ],
-                ),
-                FutureBuilder<List<Map<String, dynamic>>>(
-                  future: _fetchAttachments(int.tryParse(trackingId) ?? 0),
-                  builder: (ctx, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) {
-                      return const Padding(
-                        padding: EdgeInsets.all(12),
-                        child: Center(
-                            child: CircularProgressIndicator(strokeWidth: 2)),
-                      );
-                    }
-                    final attachments = snapshot.data ?? [];
-                    if (attachments.isEmpty) {
-                      return Padding(
-                        padding: const EdgeInsets.all(12),
-                        child: Text(
-                          'No additional attachments',
-                          style: TextStyle(
-                              color: Colors.grey.shade600,
-                              fontStyle: FontStyle.italic),
+              FutureBuilder<Map<String, String>>(
+                future: detailsFuture,
+                builder: (ctx, snapshot) {
+                  final details = snapshot.data ??
+                      <String, String>{
+                        'trackingId': trackingId,
+                        'type': (activity['type']?.toString() ?? '').trim(),
+                        'endLocation': endLocation,
+                        'currentHolder': currentHolder,
+                        'status': (activity['status']?.toString() ?? '').trim(),
+                      };
+
+                  final resolvedTrackingId =
+                      (details['trackingId'] ?? '').trim();
+                  final resolvedType = (details['type'] ?? '').trim();
+                  final resolvedEndLocation =
+                      (details['endLocation'] ?? '').trim();
+                  final resolvedCurrentHolder =
+                      (details['currentHolder'] ?? '').trim();
+                  final resolvedStatus = (details['status'] ?? '').trim();
+
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (snapshot.connectionState == ConnectionState.waiting)
+                        const Padding(
+                          padding: EdgeInsets.only(top: 8, bottom: 8),
+                          child: LinearProgressIndicator(minHeight: 2),
                         ),
-                      );
-                    }
-                    return Column(
-                      children: attachments.take(3).map((att) {
-                        final fileName =
-                            att['file_name']?.toString() ?? 'Attachment';
-                        final dept = att['department']?.toString() ?? '';
-                        final remarks = att['remarks']?.toString() ?? '';
-                        return ListTile(
-                          dense: true,
-                          leading: Icon(
-                            fileName.toLowerCase().endsWith('.pdf')
-                                ? Icons.picture_as_pdf
-                                : fileName.toLowerCase().endsWith('.jpg') ||
-                                        fileName.toLowerCase().endsWith('.png')
-                                    ? Icons.image
-                                    : Icons.insert_drive_file,
-                            color: const Color(0xFF6868AC),
-                          ),
-                          title: Text(fileName,
-                              maxLines: 1, overflow: TextOverflow.ellipsis),
-                          subtitle: Text(
-                            dept.isNotEmpty
-                                ? dept
-                                : (remarks.isNotEmpty
-                                    ? remarks
-                                    : 'Attached document'),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          trailing: IconButton(
-                            icon: const Icon(Icons.open_in_new, size: 18),
-                            onPressed: () async {
-                              final url = att['url']?.toString() ??
-                                  att['file_path']?.toString();
-                              if (url != null && url.isNotEmpty) {
-                                final uri = Uri.tryParse(url);
-                                if (uri != null && await canLaunchUrl(uri)) {
-                                  await launchUrl(uri,
-                                      mode: LaunchMode.externalApplication);
+                      if (activity['id'] != null) ...[
+                        const SizedBox(height: 8),
+                        Text('ID: ${activity['id']}',
+                            style: TextStyle(
+                                fontSize: 12,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurface
+                                    .withOpacity(0.7))),
+                      ],
+                      const SizedBox(height: 4),
+                      Text(
+                        'Type: ${resolvedType.isNotEmpty ? resolvedType : 'Document'}',
+                        style: TextStyle(
+                            fontSize: 12,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurface
+                                .withOpacity(0.7)),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'End Location: ${resolvedEndLocation.isNotEmpty ? resolvedEndLocation : 'Not available'}',
+                        style: TextStyle(
+                            fontSize: 12,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurface
+                                .withOpacity(0.7)),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Current Holder: ${resolvedCurrentHolder.isNotEmpty ? resolvedCurrentHolder : 'Not available'}',
+                        style: TextStyle(
+                            fontSize: 12,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurface
+                                .withOpacity(0.7)),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Status: ${resolvedStatus.isNotEmpty ? resolvedStatus : 'Not available'}',
+                        style: TextStyle(
+                            fontSize: 12,
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurface
+                                .withOpacity(0.7)),
+                      ),
+                      if (resolvedTrackingId.isNotEmpty) ...[
+                        const SizedBox(height: 16),
+                        const Divider(),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Row(
+                              children: [
+                                Icon(Icons.attach_file,
+                                    size: 18, color: Color(0xFF6868AC)),
+                                SizedBox(width: 8),
+                                Text('Attachments',
+                                    style: TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.w600)),
+                              ],
+                            ),
+                            TextButton.icon(
+                              onPressed: () {
+                                Navigator.pop(context);
+                                final id = int.tryParse(resolvedTrackingId);
+                                if (id != null) {
+                                  _addAttachment(id);
+                                } else {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                        content: Text(
+                                            'Cannot add attachment: invalid tracking ID')),
+                                  );
                                 }
-                              }
-                            },
+                              },
+                              icon: const Icon(Icons.add, size: 18),
+                              label: const Text('Add'),
+                              style: TextButton.styleFrom(
+                                foregroundColor: const Color(0xFF6868AC),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 12, vertical: 4),
+                              ),
+                            ),
+                          ],
+                        ),
+                        FutureBuilder<List<Map<String, dynamic>>>(
+                          future: _fetchAttachments(
+                              int.tryParse(resolvedTrackingId) ?? 0),
+                          builder: (ctx, snapshot) {
+                            if (snapshot.connectionState ==
+                                ConnectionState.waiting) {
+                              return const Padding(
+                                padding: EdgeInsets.all(12),
+                                child: Center(
+                                    child: CircularProgressIndicator(
+                                        strokeWidth: 2)),
+                              );
+                            }
+                            final attachments = snapshot.data ?? [];
+                            if (attachments.isEmpty) {
+                              return Padding(
+                                padding: const EdgeInsets.all(12),
+                                child: Text(
+                                  'No additional attachments',
+                                  style: TextStyle(
+                                      color: Colors.grey.shade600,
+                                      fontStyle: FontStyle.italic),
+                                ),
+                              );
+                            }
+                            return Column(
+                              children: attachments.take(3).map((att) {
+                                final fileName = att['file_name']?.toString() ??
+                                    'Attachment';
+                                final dept =
+                                    att['department']?.toString() ?? '';
+                                final remarks =
+                                    att['remarks']?.toString() ?? '';
+                                return ListTile(
+                                  dense: true,
+                                  leading: Icon(
+                                    fileName.toLowerCase().endsWith('.pdf')
+                                        ? Icons.picture_as_pdf
+                                        : fileName
+                                                    .toLowerCase()
+                                                    .endsWith('.jpg') ||
+                                                fileName
+                                                    .toLowerCase()
+                                                    .endsWith('.png')
+                                            ? Icons.image
+                                            : Icons.insert_drive_file,
+                                    color: const Color(0xFF6868AC),
+                                  ),
+                                  title: Text(fileName,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis),
+                                  subtitle: Text(
+                                    dept.isNotEmpty
+                                        ? dept
+                                        : (remarks.isNotEmpty
+                                            ? remarks
+                                            : 'Attached document'),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  trailing: IconButton(
+                                    icon:
+                                        const Icon(Icons.open_in_new, size: 18),
+                                    onPressed: () async {
+                                      final url = att['url']?.toString() ??
+                                          att['file_path']?.toString();
+                                      if (url != null && url.isNotEmpty) {
+                                        final uri = Uri.tryParse(url);
+                                        if (uri != null &&
+                                            await canLaunchUrl(uri)) {
+                                          await launchUrl(uri,
+                                              mode: LaunchMode
+                                                  .externalApplication);
+                                        }
+                                      }
+                                    },
+                                  ),
+                                );
+                              }).toList(),
+                            );
+                          },
+                        ),
+                        const Divider(),
+                      ],
+                      if (debugLine.isNotEmpty)
+                        ExpansionTile(
+                          tilePadding: EdgeInsets.zero,
+                          childrenPadding: EdgeInsets.zero,
+                          title: Text(
+                            'Debug Info',
+                            style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .onSurface
+                                    .withOpacity(0.8)),
                           ),
-                        );
-                      }).toList(),
-                    );
-                  },
-                ),
-                const Divider(),
-              ],
-              if (debugLine.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Text('Debug:',
-                    style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
-                        color: Theme.of(context)
-                            .colorScheme
-                            .onSurface
-                            .withOpacity(0.8))),
-                const SizedBox(height: 4),
-                SelectableText(
-                  debugLine,
-                  style: TextStyle(
-                      fontSize: 12,
-                      color: Theme.of(context)
-                          .colorScheme
-                          .onSurface
-                          .withOpacity(0.75)),
-                ),
-                const SizedBox(height: 8),
-                OutlinedButton.icon(
-                  onPressed: () async {
-                    await Clipboard.setData(ClipboardData(text: debugLine));
-                    if (mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Debug copied')),
-                      );
-                    }
-                  },
-                  icon: const Icon(Icons.copy, size: 16),
-                  label: const Text('Copy debug'),
-                ),
-              ],
+                          children: [
+                            SelectableText(
+                              debugLine,
+                              style: TextStyle(
+                                  fontSize: 12,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurface
+                                      .withOpacity(0.75)),
+                            ),
+                            const SizedBox(height: 8),
+                            OutlinedButton.icon(
+                              onPressed: () async {
+                                await Clipboard.setData(
+                                    ClipboardData(text: debugLine));
+                                if (mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                        content: Text('Debug copied')),
+                                  );
+                                }
+                              },
+                              icon: const Icon(Icons.copy, size: 16),
+                              label: const Text('Copy debug'),
+                            ),
+                          ],
+                        ),
+                    ],
+                  );
+                },
+              ),
               const SizedBox(height: 12),
             ],
           ),
