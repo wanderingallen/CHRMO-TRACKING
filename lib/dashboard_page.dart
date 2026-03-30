@@ -3862,14 +3862,14 @@ class _DashboardPageState extends State<DashboardPage>
     }
   }
 
-  /// Show full activity details with attachments
+  /// Show full activity details
   void _showActivityDetails(Map<String, dynamic> activity) {
     showModalBottomSheet(
       context: context,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
-      isScrollControlled: false,
-      builder: (_) {
+      isScrollControlled: true,
+      builder: (ctx) {
         String v(String key) => (activity[key]?.toString() ?? '').trim();
         String vAny(List<String> keys) {
           for (final k in keys) {
@@ -3884,29 +3884,8 @@ class _DashboardPageState extends State<DashboardPage>
         final docHash = v('docHash');
         final fileUrl = v('fileUrl');
         final filePath = v('filePath');
-        final recipientDept = v('recipientDepartment');
         final endLocation = vAny(['endLocation', 'end_location']);
         final currentHolder = vAny(['currentHolder', 'current_holder']);
-        final atEnd = endLocation.isNotEmpty
-            ? (_sameDept(_userDepartment, endLocation) ||
-                _sameDept(recipientDept, endLocation) ||
-                _sameDept(currentHolder, endLocation))
-            : (_sameDept(_userDepartment, recipientDept) ||
-                _sameDept(_userDepartment, currentHolder));
-        final debugLine = [
-          'dept=${recipientDept.isNotEmpty ? recipientDept : '(empty)'}',
-          'userDept=${_userDepartment.isNotEmpty ? _userDepartment : '(empty)'}',
-          'endLocation=${endLocation.isNotEmpty ? endLocation : '(empty)'}',
-          'currentHolder=${currentHolder.isNotEmpty ? currentHolder : '(empty)'}',
-          'atEnd=$atEnd',
-          'trackingId=${trackingId.isNotEmpty ? trackingId : '(empty)'}',
-          'mobileTs=${mobileTs.isNotEmpty ? mobileTs : '(empty)'}',
-          'docHash=${docHash.isNotEmpty ? docHash : '(empty)'}',
-          if (trackingId.isEmpty && mobileTs.isEmpty && docHash.isEmpty)
-            'routingInfo=missing',
-          if (filePath.isNotEmpty) 'filePath=$filePath',
-          if (fileUrl.isNotEmpty) 'fileUrl=$fileUrl',
-        ].join(' | ');
 
         Future<Map<String, String>> loadDetails() async {
           String resolvedTrackingId = trackingId;
@@ -3974,302 +3953,162 @@ class _DashboardPageState extends State<DashboardPage>
         }
 
         final detailsFuture = loadDetails();
-        return Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    width: 48,
-                    height: 48,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF6868AC).withOpacity(0.08),
-                      borderRadius: BorderRadius.circular(12),
+        Widget detailRow(
+          IconData icon,
+          String label,
+          String value,
+        ) {
+          return Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(icon, size: 16, color: const Color(0xFF6868AC)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '$label: $value',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Theme.of(context)
+                          .colorScheme
+                          .onSurface
+                          .withOpacity(0.75),
                     ),
-                    child: Icon(
-                        activity['icon'] as IconData? ?? Icons.notifications,
-                        color: const Color(0xFF6868AC)),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
+                ),
+              ],
+            ),
+          );
+        }
+
+        final mq = MediaQuery.of(ctx);
+        return SafeArea(
+          child: SingleChildScrollView(
+            padding: EdgeInsets.only(
+              left: 16,
+              right: 16,
+              top: 16,
+              bottom: mq.viewInsets.bottom + 16,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 48,
+                      height: 48,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF6868AC).withOpacity(0.08),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(
+                        activity['icon'] as IconData? ?? Icons.description,
+                        color: const Color(0xFF6868AC),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            activity['title']?.toString() ?? 'Activity',
+                            style: const TextStyle(
+                                fontSize: 16, fontWeight: FontWeight.w700),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            activity['time']?.toString() ?? '',
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.grey),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.close),
+                      onPressed: () => Navigator.pop(context),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  activity['subtitle']?.toString() ?? '',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: Theme.of(context).colorScheme.onSurface,
+                  ),
+                ),
+                FutureBuilder<Map<String, String>>(
+                  future: detailsFuture,
+                  builder: (ctx, snapshot) {
+                    final details = snapshot.data ??
+                        <String, String>{
+                          'trackingId': trackingId,
+                          'type': (activity['type']?.toString() ?? '').trim(),
+                          'endLocation': endLocation,
+                          'currentHolder': currentHolder,
+                          'status':
+                              (activity['status']?.toString() ?? '').trim(),
+                        };
+
+                    final resolvedType = (details['type'] ?? '').trim();
+                    final resolvedEndLocation =
+                        (details['endLocation'] ?? '').trim();
+                    final resolvedCurrentHolder =
+                        (details['currentHolder'] ?? '').trim();
+                    final resolvedStatus = (details['status'] ?? '').trim();
+
+                    return Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(activity['title']?.toString() ?? 'Activity',
-                            style: const TextStyle(
-                                fontSize: 16, fontWeight: FontWeight.w700)),
-                        const SizedBox(height: 4),
-                        Text(activity['time']?.toString() ?? '',
-                            style: const TextStyle(
-                                fontSize: 12, color: Colors.grey)),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.close),
-                    onPressed: () => Navigator.pop(context),
-                  )
-                ],
-              ),
-              const SizedBox(height: 12),
-              Text(activity['subtitle']?.toString() ?? '',
-                  style: TextStyle(
-                      fontSize: 14,
-                      color: Theme.of(context).colorScheme.onSurface)),
-              FutureBuilder<Map<String, String>>(
-                future: detailsFuture,
-                builder: (ctx, snapshot) {
-                  final details = snapshot.data ??
-                      <String, String>{
-                        'trackingId': trackingId,
-                        'type': (activity['type']?.toString() ?? '').trim(),
-                        'endLocation': endLocation,
-                        'currentHolder': currentHolder,
-                        'status': (activity['status']?.toString() ?? '').trim(),
-                      };
-
-                  final resolvedTrackingId =
-                      (details['trackingId'] ?? '').trim();
-                  final resolvedType = (details['type'] ?? '').trim();
-                  final resolvedEndLocation =
-                      (details['endLocation'] ?? '').trim();
-                  final resolvedCurrentHolder =
-                      (details['currentHolder'] ?? '').trim();
-                  final resolvedStatus = (details['status'] ?? '').trim();
-
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (snapshot.connectionState == ConnectionState.waiting)
-                        const Padding(
-                          padding: EdgeInsets.only(top: 8, bottom: 8),
-                          child: LinearProgressIndicator(minHeight: 2),
-                        ),
-                      if (activity['id'] != null) ...[
-                        const SizedBox(height: 8),
-                        Text('ID: ${activity['id']}',
-                            style: TextStyle(
-                                fontSize: 12,
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurface
-                                    .withOpacity(0.7))),
-                      ],
-                      const SizedBox(height: 4),
-                      Text(
-                        'Type: ${resolvedType.isNotEmpty ? resolvedType : 'Document'}',
-                        style: TextStyle(
-                            fontSize: 12,
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onSurface
-                                .withOpacity(0.7)),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'End Location: ${resolvedEndLocation.isNotEmpty ? resolvedEndLocation : 'Not available'}',
-                        style: TextStyle(
-                            fontSize: 12,
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onSurface
-                                .withOpacity(0.7)),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Current Holder: ${resolvedCurrentHolder.isNotEmpty ? resolvedCurrentHolder : 'Not available'}',
-                        style: TextStyle(
-                            fontSize: 12,
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onSurface
-                                .withOpacity(0.7)),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Status: ${resolvedStatus.isNotEmpty ? resolvedStatus : 'Not available'}',
-                        style: TextStyle(
-                            fontSize: 12,
-                            color: Theme.of(context)
-                                .colorScheme
-                                .onSurface
-                                .withOpacity(0.7)),
-                      ),
-                      if (resolvedTrackingId.isNotEmpty) ...[
-                        const SizedBox(height: 16),
-                        const Divider(),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Row(
-                              children: [
-                                Icon(Icons.attach_file,
-                                    size: 18, color: Color(0xFF6868AC)),
-                                SizedBox(width: 8),
-                                Text('Attachments',
-                                    style: TextStyle(
-                                        fontSize: 14,
-                                        fontWeight: FontWeight.w600)),
-                              ],
-                            ),
-                            TextButton.icon(
-                              onPressed: () {
-                                Navigator.pop(context);
-                                final id = int.tryParse(resolvedTrackingId);
-                                if (id != null) {
-                                  _addAttachment(id);
-                                } else {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                        content: Text(
-                                            'Cannot add attachment: invalid tracking ID')),
-                                  );
-                                }
-                              },
-                              icon: const Icon(Icons.add, size: 18),
-                              label: const Text('Add'),
-                              style: TextButton.styleFrom(
-                                foregroundColor: const Color(0xFF6868AC),
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 12, vertical: 4),
-                              ),
-                            ),
-                          ],
-                        ),
-                        FutureBuilder<List<Map<String, dynamic>>>(
-                          future: _fetchAttachments(
-                              int.tryParse(resolvedTrackingId) ?? 0),
-                          builder: (ctx, snapshot) {
-                            if (snapshot.connectionState ==
-                                ConnectionState.waiting) {
-                              return const Padding(
-                                padding: EdgeInsets.all(12),
-                                child: Center(
-                                    child: CircularProgressIndicator(
-                                        strokeWidth: 2)),
-                              );
-                            }
-                            final attachments = snapshot.data ?? [];
-                            if (attachments.isEmpty) {
-                              return Padding(
-                                padding: const EdgeInsets.all(12),
-                                child: Text(
-                                  'No additional attachments',
-                                  style: TextStyle(
-                                      color: Colors.grey.shade600,
-                                      fontStyle: FontStyle.italic),
-                                ),
-                              );
-                            }
-                            return Column(
-                              children: attachments.take(3).map((att) {
-                                final fileName = att['file_name']?.toString() ??
-                                    'Attachment';
-                                final dept =
-                                    att['department']?.toString() ?? '';
-                                final remarks =
-                                    att['remarks']?.toString() ?? '';
-                                return ListTile(
-                                  dense: true,
-                                  leading: Icon(
-                                    fileName.toLowerCase().endsWith('.pdf')
-                                        ? Icons.picture_as_pdf
-                                        : fileName
-                                                    .toLowerCase()
-                                                    .endsWith('.jpg') ||
-                                                fileName
-                                                    .toLowerCase()
-                                                    .endsWith('.png')
-                                            ? Icons.image
-                                            : Icons.insert_drive_file,
-                                    color: const Color(0xFF6868AC),
-                                  ),
-                                  title: Text(fileName,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis),
-                                  subtitle: Text(
-                                    dept.isNotEmpty
-                                        ? dept
-                                        : (remarks.isNotEmpty
-                                            ? remarks
-                                            : 'Attached document'),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  trailing: IconButton(
-                                    icon:
-                                        const Icon(Icons.open_in_new, size: 18),
-                                    onPressed: () async {
-                                      final url = att['url']?.toString() ??
-                                          att['file_path']?.toString();
-                                      if (url != null && url.isNotEmpty) {
-                                        final uri = Uri.tryParse(url);
-                                        if (uri != null &&
-                                            await canLaunchUrl(uri)) {
-                                          await launchUrl(uri,
-                                              mode: LaunchMode
-                                                  .externalApplication);
-                                        }
-                                      }
-                                    },
-                                  ),
-                                );
-                              }).toList(),
-                            );
-                          },
-                        ),
-                        const Divider(),
-                      ],
-                      if (debugLine.isNotEmpty)
-                        ExpansionTile(
-                          tilePadding: EdgeInsets.zero,
-                          childrenPadding: EdgeInsets.zero,
-                          title: Text(
-                            'Debug Info',
-                            style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700,
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurface
-                                    .withOpacity(0.8)),
+                        if (snapshot.connectionState == ConnectionState.waiting)
+                          const Padding(
+                            padding: EdgeInsets.only(top: 10),
+                            child: LinearProgressIndicator(minHeight: 2),
                           ),
-                          children: [
-                            SelectableText(
-                              debugLine,
-                              style: TextStyle(
-                                  fontSize: 12,
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .onSurface
-                                      .withOpacity(0.75)),
-                            ),
-                            const SizedBox(height: 8),
-                            OutlinedButton.icon(
-                              onPressed: () async {
-                                await Clipboard.setData(
-                                    ClipboardData(text: debugLine));
-                                if (mounted) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(
-                                        content: Text('Debug copied')),
-                                  );
-                                }
-                              },
-                              icon: const Icon(Icons.copy, size: 16),
-                              label: const Text('Copy debug'),
-                            ),
-                          ],
+                        if (activity['id'] != null)
+                          detailRow(
+                            Icons.tag,
+                            'ID',
+                            activity['id'].toString(),
+                          ),
+                        detailRow(
+                          Icons.description_outlined,
+                          'Type',
+                          resolvedType.isNotEmpty ? resolvedType : 'Document',
                         ),
-                    ],
-                  );
-                },
-              ),
-              const SizedBox(height: 12),
-            ],
+                        detailRow(
+                          Icons.flag_outlined,
+                          'End Location',
+                          resolvedEndLocation.isNotEmpty
+                              ? resolvedEndLocation
+                              : 'Not available',
+                        ),
+                        detailRow(
+                          Icons.apartment_outlined,
+                          'Current Holder',
+                          resolvedCurrentHolder.isNotEmpty
+                              ? resolvedCurrentHolder
+                              : 'Not available',
+                        ),
+                        detailRow(
+                          Icons.info_outline,
+                          'Status',
+                          resolvedStatus.isNotEmpty
+                              ? resolvedStatus
+                              : 'Not available',
+                        ),
+                      ],
+                    );
+                  },
+                ),
+                const SizedBox(height: 12),
+              ],
+            ),
           ),
         );
       },
@@ -8202,10 +8041,14 @@ class _DashboardPageState extends State<DashboardPage>
                             effectiveHolderDept.isNotEmpty) &&
                         (status == null || status != 'confirmed')) ...[
                       const SizedBox(height: 6),
-                      Row(
+                      OverflowBar(
+                        alignment: MainAxisAlignment.start,
+                        spacing: 6,
+                        overflowSpacing: 6,
                         children: [
                           // Receive (first)
-                          Expanded(
+                          SizedBox(
+                            width: 96,
                             child: ElevatedButton(
                               onPressed: (alreadyReceived ||
                                       _receivingKeys.contains(receiveKey))
@@ -8420,18 +8263,20 @@ class _DashboardPageState extends State<DashboardPage>
                                         color: Colors.white,
                                       ),
                                     )
-                                  : const Text(
-                                      'Receive',
-                                      style: TextStyle(
-                                          fontSize: 12,
-                                          fontWeight: FontWeight.w500),
+                                  : const FittedBox(
+                                      fit: BoxFit.scaleDown,
+                                      child: Text(
+                                        'Receive',
+                                        style: TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w500),
+                                      ),
                                     ),
                             ),
                           ),
                           if (!isAnnouncement) ...[
                             // Icon-only capture button for returned documents
                             if (serverStatus == 'returned') ...[
-                              const SizedBox(width: 6),
                               SizedBox(
                                 width: 40,
                                 height: 36,
@@ -8487,9 +8332,9 @@ class _DashboardPageState extends State<DashboardPage>
                                 ),
                               ),
                             ],
-                            const SizedBox(width: 6),
                             // Route/Update (second) - memos only
-                            Expanded(
+                            SizedBox(
+                              width: 96,
                               child: OutlinedButton(
                                 onPressed: alreadyReceived
                                     ? () async {
@@ -8599,7 +8444,6 @@ class _DashboardPageState extends State<DashboardPage>
                                 ),
                               ),
                             ),
-                            const SizedBox(width: 6),
                             // Overflow actions (third) - memos only
                             SizedBox(
                               width: 40,
