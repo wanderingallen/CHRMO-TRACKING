@@ -4250,7 +4250,12 @@ if (isset($_GET['action']) && $_GET['action'] === 'archive_group') {
   // for each group row. The tracking rows are NOT deleted — other departments
   // still see them until they independently archive.
   $actor_id = $_SESSION['user_id'] ?? null;
-  $archivingDept = strtoupper(trim($__isAdmin ? 'ADMIN' : ($_SESSION['user_department'] ?? $_SESSION['department'] ?? '')));
+  $archivingDeptRaw = $__isAdmin ? 'ADMIN' : ($_SESSION['user_department'] ?? $_SESSION['department'] ?? '');
+  if (trim((string)$archivingDeptRaw) === '') {
+    // Fallback for sessions missing department: use current holder/department from the row.
+    $archivingDeptRaw = ($r['current_holder'] ?? $r['department'] ?? '');
+  }
+  $archivingDept = strtoupper(trim((string)$archivingDeptRaw));
   $archUserId = (int)($_SESSION['user_id'] ?? 0);
   foreach ($groupRows as $r) {
     $rid = (int)($r['id'] ?? 0);
@@ -4308,7 +4313,7 @@ if (isset($_GET['archive_id'])) {
 
     // Move from tracking to archive table (or mobile-only handling for gallery docs)
     $doc = null;
-    if ($sdoc = $connection->prepare("SELECT employee_name, department, type, file_size, file_type_icon, file_path, doc_hash, mobile_timestamp, ocr_content FROM tracking WHERE id=?")) {
+    if ($sdoc = $connection->prepare("SELECT employee_name, department, current_holder, type, file_size, file_type_icon, file_path, doc_hash, mobile_timestamp, ocr_content FROM tracking WHERE id=?")) {
         $sdoc->bind_param('s', $archive_id);
         if ($sdoc->execute()) { $res = $sdoc->get_result(); $doc = $res ? $res->fetch_assoc() : null; }
         $sdoc->close();
@@ -4458,7 +4463,12 @@ if (isset($_GET['archive_id'])) {
     // Per-department archive isolation: record that this department has archived
     // this document. The tracking row is NOT deleted — other departments and admin
     // still see it in tracking.php until they independently archive it.
-    $archivingDept = strtoupper(trim($__isAdmin ? 'ADMIN' : ($_SESSION['user_department'] ?? $_SESSION['department'] ?? '')));
+    $archivingDeptRaw = $__isAdmin ? 'ADMIN' : ($_SESSION['user_department'] ?? $_SESSION['department'] ?? '');
+    if (trim((string)$archivingDeptRaw) === '') {
+      // Fallback for sessions missing department: use current holder/department from the doc.
+      $archivingDeptRaw = ($doc['current_holder'] ?? $doc['department'] ?? '');
+    }
+    $archivingDept = strtoupper(trim((string)$archivingDeptRaw));
     if ($archivingDept !== '') {
         $daStmt = $connection->prepare("INSERT IGNORE INTO department_archives (tracking_id, department, archived_by_user_id) VALUES (?, ?, ?)");
         if ($daStmt) {
