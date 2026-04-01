@@ -34,6 +34,23 @@ function __tracking_document_history_has_doc_type(mysqli $connection): bool {
     if ($res) { $res->free(); }
     return $has;
 }
+
+function __tracking_ensure_department_archives_table(mysqli $connection): bool {
+  static $ok = null;
+  if ($ok !== null) return $ok;
+  $sql = "CREATE TABLE IF NOT EXISTS department_archives (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    tracking_id INT NOT NULL,
+    department VARCHAR(120) NOT NULL,
+    archived_by_user_id INT NULL,
+    archived_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_tracking_department (tracking_id, department),
+    KEY idx_tracking_id (tracking_id),
+    KEY idx_department (department)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4";
+  $ok = (bool)@$connection->query($sql);
+  return $ok;
+}
 require_once 'settings_util.php';
 require_once 'security.php';
 require_once 'api/archive_storage.php';
@@ -168,6 +185,8 @@ if (!$connection || $connection->connect_error) {
   http_response_code(503);
   die('Database unavailable');
 }
+
+$__hasDeptArchives = __tracking_ensure_department_archives_table($connection);
 
 // Housekeeping: remove incomplete/dummy rows that have no file identity.
 // These rows cannot be opened/previewed and pollute search/testing.
@@ -4264,7 +4283,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'archive_group') {
     try { tracking_firestore_delete_linked_notifications($connection, (int)$rid); } catch (Throwable $t) {}
 
     // Record department archive
-    if ($archivingDept !== '') {
+    if ($__hasDeptArchives && $archivingDept !== '') {
         $daStmt = $connection->prepare("INSERT IGNORE INTO department_archives (tracking_id, department, archived_by_user_id) VALUES (?, ?, ?)");
         if ($daStmt) {
             $daStmt->bind_param('isi', $rid, $archivingDept, $archUserId);
@@ -4469,7 +4488,7 @@ if (isset($_GET['archive_id'])) {
       $archivingDeptRaw = ($doc['current_holder'] ?? $doc['department'] ?? '');
     }
     $archivingDept = strtoupper(trim((string)$archivingDeptRaw));
-    if ($archivingDept !== '') {
+    if ($__hasDeptArchives && $archivingDept !== '') {
         $daStmt = $connection->prepare("INSERT IGNORE INTO department_archives (tracking_id, department, archived_by_user_id) VALUES (?, ?, ?)");
         if ($daStmt) {
             $archUserId = (int)($_SESSION['user_id'] ?? 0);
@@ -4628,6 +4647,10 @@ if ($status !== '' && $status !== 'All Statuses') {
     $bindParams[] = $status;
   }
 }
+if ($status === '' || $status === 'All Statuses') {
+  // Default table shows active documents only; archived rows require explicit status filter.
+  $clauses[] = "UPPER(TRIM(COALESCE(tracking.status,''))) <> 'ARCHIVED'";
+}
 
 // Department filter helper (matches department OR holder OR end_location, using LIKE for flexibility)
 $dept = trim((string)($_GET['dept'] ?? ''));
@@ -4666,7 +4689,7 @@ if (!$__isAdmin && !empty($_SESSION['user_department'])) {
   $archDept = $__isAdmin
       ? 'ADMIN'
       : strtoupper(trim($_SESSION['user_department'] ?? $_SESSION['department'] ?? ''));
-  if ($archDept !== '') {
+  if ($__hasDeptArchives && $archDept !== '') {
     $clauses[] = 'NOT EXISTS (SELECT 1 FROM department_archives da WHERE da.tracking_id = tracking.id AND UPPER(TRIM(da.department)) = ?)';
     $bindTypes .= 's';
     $bindParams[] = $archDept;

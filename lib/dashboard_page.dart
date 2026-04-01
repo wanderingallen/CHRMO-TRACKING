@@ -2832,6 +2832,9 @@ class _DashboardPageState extends State<DashboardPage>
     String? trackingId,
     int? activityId,
   }) async {
+    final stableTs = mobileTimestamp?.trim() ?? '';
+    final tid = trackingId?.trim() ?? '';
+    final nextDeptUpper = nextDepartment.trim().toUpperCase();
     try {
       final root = await _getServerRoot();
       if (root == null) return;
@@ -2857,7 +2860,6 @@ class _DashboardPageState extends State<DashboardPage>
       // CRITICAL: For routing to work (updating existing row), we need either
       // a valid tracking_id or a stable mobile_timestamp from the original document.
       // Do NOT generate a new timestamp - that will create a new row!
-      final stableTs = mobileTimestamp?.trim() ?? '';
       final hasTrackingId = (trackingId?.trim().isNotEmpty ?? false);
       final int notifId = activityId ?? 0;
       final bool hasNotifId = notifId > 0;
@@ -2889,7 +2891,6 @@ class _DashboardPageState extends State<DashboardPage>
         }
         return;
       }
-      final tid = trackingId?.trim() ?? '';
       String effectiveType = type.trim();
       String effectiveEndLocation = endLocation.trim();
 
@@ -2947,8 +2948,8 @@ class _DashboardPageState extends State<DashboardPage>
       if (docHash?.trim().isNotEmpty ?? false) {
         payload['doc_hash'] = docHash!.trim();
       }
-      if (tid.isNotEmpty) {
-        payload['tracking_id'] = tid;
+      if (trackingId?.trim().isNotEmpty ?? false) {
+        payload['tracking_id'] = trackingId!.trim();
       }
       final r = await http
           .post(uri, body: payload)
@@ -2991,7 +2992,9 @@ class _DashboardPageState extends State<DashboardPage>
             try {
               await _updateNotificationStatus(notifId, 'routed');
             } catch (_) {}
-            await _deleteNotificationById(notifId);
+            try {
+              await _deleteNotificationById(notifId);
+            } catch (_) {}
           }
 
           // Also remove locally immediately (in case backend still returns it until next refresh)
@@ -3007,13 +3010,73 @@ class _DashboardPageState extends State<DashboardPage>
 
           ScaffoldMessenger.of(context)
               .showSnackBar(const SnackBar(content: Text('Routed')));
-          await _fetchRecentActivity();
+          try {
+            await _fetchRecentActivity();
+          } catch (_) {}
         } else {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
               content: Text('Route failed (${r.statusCode}): ${r.body}')));
         }
       }
     } catch (e) {
+      bool recoveredAsSuccess = false;
+      try {
+        if (e is TimeoutException || e is SocketException) {
+          final meta = await _fetchRoutingMeta(
+            trackingId: tid.isNotEmpty ? tid : null,
+            mobileTimestamp: stableTs.isNotEmpty ? stableTs : null,
+            docHash:
+                (docHash?.trim().isNotEmpty ?? false) ? docHash!.trim() : null,
+            filePath: filePath,
+          );
+          final holder =
+              (meta?['current_holder'] ?? meta?['currentHolder'] ?? '')
+                  .toString()
+                  .trim()
+                  .toUpperCase();
+          final status =
+              (meta?['status'] ?? '').toString().trim().toUpperCase();
+          recoveredAsSuccess =
+              (nextDeptUpper.isNotEmpty && holder == nextDeptUpper) ||
+                  status == 'COMPLETED' ||
+                  status == 'APPROVED' ||
+                  status == 'ARCHIVED';
+        }
+      } catch (_) {
+        recoveredAsSuccess = false;
+      }
+
+      if (recoveredAsSuccess) {
+        final int? notifId = activityId;
+        if (notifId != null && notifId > 0) {
+          try {
+            await _updateNotificationStatus(notifId, 'routed');
+          } catch (_) {}
+          try {
+            await _deleteNotificationById(notifId);
+          } catch (_) {}
+        }
+
+        if (mounted && activityId != null) {
+          setState(() {
+            _recentActivity.removeWhere((m) {
+              final mid = m['id'];
+              if (mid == null) return false;
+              return mid.toString() == activityId.toString();
+            });
+          });
+        }
+
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('Routed')));
+        }
+        try {
+          await _fetchRecentActivity();
+        } catch (_) {}
+        return;
+      }
+
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('Network error: $e')));
@@ -9405,7 +9468,9 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
             try {
               await _updateNotificationStatus(notifId, 'routed');
             } catch (_) {}
-            await _deleteNotificationById(notifId);
+            try {
+              await _deleteNotificationById(notifId);
+            } catch (_) {}
           }
 
           ScaffoldMessenger.of(context)
