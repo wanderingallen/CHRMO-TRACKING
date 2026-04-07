@@ -289,6 +289,364 @@ function __tracking_load_departments(mysqli $connection): array {
     return $out;
 }
 
+  function __tracking_is_dummy_marker_row(array $row): bool {
+    $employee = (string)($row['employee_name'] ?? '');
+    $docHash = (string)($row['doc_hash'] ?? '');
+    $mobileTs = (string)($row['mobile_timestamp'] ?? '');
+    $filePath = (string)($row['file_path'] ?? '');
+    return (
+      stripos($employee, '[TEST-DUMMY]') === 0 ||
+      stripos($docHash, 'dummytest-') === 0 ||
+      stripos($mobileTs, 'dummyts-') === 0 ||
+      stripos($filePath, 'uploads/dummy/') === 0
+    );
+  }
+
+  function __tracking_insert_history_event(mysqli $connection, int $docId, string $docType, string $action, int $actorId, ?string $fromStatus, ?string $toStatus, ?string $fromHolder, ?string $toHolder, string $notes): void {
+    $hasDocType = __tracking_document_history_has_doc_type($connection);
+    $sql = $hasDocType
+      ? "INSERT INTO document_history (doc_id, doc_type, action, actor_user_id, from_status, to_status, from_holder, to_holder, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      : "INSERT INTO document_history (doc_id, action, actor_user_id, from_status, to_status, from_holder, to_holder, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+    $stmt = $connection->prepare($sql);
+    if (!$stmt) {
+      return;
+    }
+    if ($hasDocType) {
+      $stmt->bind_param('ississsss', $docId, $docType, $action, $actorId, $fromStatus, $toStatus, $fromHolder, $toHolder, $notes);
+    } else {
+      $stmt->bind_param('isisssss', $docId, $action, $actorId, $fromStatus, $toStatus, $fromHolder, $toHolder, $notes);
+    }
+    @$stmt->execute();
+    $stmt->close();
+  }
+
+  // Admin test harness: seed realistic dummy documents for archive/tracking tests.
+  if (isset($_GET['action']) && $_GET['action'] === 'seed_dummy_tracking_data') {
+    Security::require_role(['admin']);
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+      tracking_send_json($connection, ['success' => false, 'error' => 'POST required']);
+    }
+
+    $actorId = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0;
+    $depts = __tracking_load_departments($connection);
+    $seedDepts = array_values(array_slice($depts, 0, min(4, count($depts))));
+    if (count($seedDepts) < 3) {
+      $seedDepts = ['HR', 'CBO', 'ACCOUNTING'];
+    }
+
+    $nowTs = time();
+    $batchToken = 'DUMMYTRACK-' . date('YmdHis', $nowTs);
+    $rows = [
+      [
+        'type' => 'Payroll',
+        'employee_name' => '[TEST-DUMMY] Payroll Register ' . date('Y-m-d'),
+        'department' => $seedDepts[0],
+        'current_holder' => $seedDepts[0],
+        'end_location' => $seedDepts[2] ?? $seedDepts[0],
+        'status' => 'Pending',
+        'file_type_icon' => 'pdf',
+        'file_size' => '1.2 MB',
+        'ocr_content' => "PAYROLL SUMMARY\nEmployee: Juan Dela Cruz\nPeriod: March 16-31, 2026\nGross Pay: 24,850.00\nDeductions: 2,510.00\nNet Pay: 22,340.00\nApproved by HR Manager",
+        'routing_queue' => implode(',', [$seedDepts[0], $seedDepts[1] ?? $seedDepts[0], $seedDepts[2] ?? $seedDepts[0]]),
+        'route_step' => 0,
+      ],
+      [
+        'type' => 'Memo',
+        'employee_name' => '[TEST-DUMMY] Memorandum Re Procurement',
+        'department' => $seedDepts[1] ?? $seedDepts[0],
+        'current_holder' => $seedDepts[2] ?? $seedDepts[0],
+        'end_location' => $seedDepts[3] ?? $seedDepts[0],
+        'status' => 'In Review',
+        'file_type_icon' => 'docx',
+        'file_size' => '860 KB',
+        'ocr_content' => "MEMORANDUM\nSubject: Office Supplies Replenishment\nFrom: Admin Office\nTo: Budget Office\nRequested Amount: 75,000.00\nPlease review and endorse for approval.",
+        'routing_queue' => implode(',', [$seedDepts[1] ?? $seedDepts[0], $seedDepts[2] ?? $seedDepts[0], $seedDepts[3] ?? $seedDepts[0]]),
+        'route_step' => 1,
+      ],
+      [
+        'type' => 'Travel Order',
+        'employee_name' => '[TEST-DUMMY] Travel Order NCR Cluster Meeting',
+        'department' => $seedDepts[2] ?? $seedDepts[0],
+        'current_holder' => $seedDepts[2] ?? $seedDepts[0],
+        'end_location' => $seedDepts[0],
+        'status' => 'Completed',
+        'file_type_icon' => 'pdf',
+        'file_size' => '1.9 MB',
+        'ocr_content' => "TRAVEL ORDER\nName: Maria Santos\nDestination: Quezon City\nPurpose: Inter-office Planning Workshop\nDate: April 10, 2026\nStatus: Completed",
+        'routing_queue' => implode(',', [$seedDepts[2] ?? $seedDepts[0], $seedDepts[0]]),
+        'route_step' => 1,
+      ],
+      [
+        'type' => 'Announcement',
+        'employee_name' => '[TEST-DUMMY] Announcement: Midyear Records Audit',
+        'department' => $seedDepts[0],
+        'current_holder' => 'Digital Archive',
+        'end_location' => 'Digital Archive',
+        'status' => 'Archived',
+        'file_type_icon' => 'pdf',
+        'file_size' => '540 KB',
+        'ocr_content' => "ANNOUNCEMENT\nSubject: Midyear Records Audit\nAll departments are requested to submit compliance reports by April 20, 2026.\nCoordinator: Records Management Unit",
+        'routing_queue' => implode(',', [$seedDepts[0], $seedDepts[1] ?? $seedDepts[0], $seedDepts[2] ?? $seedDepts[0]]),
+        'route_step' => 2,
+      ],
+    ];
+
+    $inserted = [];
+    foreach ($rows as $idx => $row) {
+      $docHash = 'dummytest-' . hash('sha256', $batchToken . '|' . $idx . '|' . $row['type']);
+      $mobileTs = 'dummyts-' . ($nowTs - ($idx * 47));
+      $submittedAt = date('Y-m-d H:i:s', $nowTs - (($idx + 1) * 3600));
+      $filePath = 'uploads/dummy/' . strtolower(preg_replace('/[^a-z0-9]+/i', '_', $row['type'])) . '_' . ($idx + 1) . '.pdf';
+      $ocrSummary = substr(trim((string)$row['ocr_content']), 0, 180);
+
+      $sql = "INSERT INTO tracking (type, employee_name, date_submitted, current_holder, end_location, status, department, file_type_icon, doc_hash, file_path, file_size, mobile_timestamp, ocr_content, ocr_summary, created_at, routing_queue, route_step) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+      $stmt = $connection->prepare($sql);
+      if (!$stmt) {
+        continue;
+      }
+      $stmt->bind_param(
+        'ssssssssssssssssi',
+        $row['type'],
+        $row['employee_name'],
+        $submittedAt,
+        $row['current_holder'],
+        $row['end_location'],
+        $row['status'],
+        $row['department'],
+        $row['file_type_icon'],
+        $docHash,
+        $filePath,
+        $row['file_size'],
+        $mobileTs,
+        $row['ocr_content'],
+        $ocrSummary,
+        $submittedAt,
+        $row['routing_queue'],
+        $row['route_step']
+      );
+      if (!$stmt->execute()) {
+        $stmt->close();
+        continue;
+      }
+      $trackingId = (int)$connection->insert_id;
+      $stmt->close();
+
+      __tracking_insert_history_event($connection, $trackingId, (string)$row['type'], 'create', $actorId, null, 'Pending', null, (string)$row['department'], 'Seeded dummy create event');
+      __tracking_insert_history_event($connection, $trackingId, (string)$row['type'], 'route', $actorId, 'Pending', (string)$row['status'], (string)$row['department'], (string)$row['current_holder'], 'Seeded routing event');
+      if (strcasecmp((string)$row['status'], 'Pending') !== 0) {
+        __tracking_insert_history_event($connection, $trackingId, (string)$row['type'], 'receive', $actorId, 'Pending', (string)$row['status'], (string)$row['department'], (string)$row['current_holder'], 'Seeded receive event');
+      }
+      if (strcasecmp((string)$row['status'], 'Completed') === 0) {
+        __tracking_insert_history_event($connection, $trackingId, (string)$row['type'], 'complete', $actorId, 'In Review', 'Completed', (string)$row['current_holder'], (string)$row['end_location'], 'Seeded completion event');
+      }
+      if (strcasecmp((string)$row['status'], 'Archived') === 0) {
+        __tracking_insert_history_event($connection, $trackingId, (string)$row['type'], 'archive', $actorId, 'Completed', 'Archived', (string)$row['current_holder'], 'Digital Archive', 'Seeded archive event');
+
+        $hasSourceTrackingId = __tracking_archive_has_source_tracking_id($connection);
+        $archiveSql = $hasSourceTrackingId
+          ? "INSERT INTO archive (document_name, department, type, status, date_archived, size, file_type_icon, file_path, ocr_content, source_tracking_id) VALUES (?, ?, ?, 'Archived', ?, ?, ?, ?, ?, ?)"
+          : "INSERT INTO archive (document_name, department, type, status, date_archived, size, file_type_icon, file_path, ocr_content) VALUES (?, ?, ?, 'Archived', ?, ?, ?, ?, ?)";
+        if ($a = $connection->prepare($archiveSql)) {
+          $archivedAt = date('Y-m-d H:i:s');
+          if ($hasSourceTrackingId) {
+            $a->bind_param('ssssssssi', $row['employee_name'], $row['department'], $row['type'], $archivedAt, $row['file_size'], $row['file_type_icon'], $filePath, $row['ocr_content'], $trackingId);
+          } else {
+            $a->bind_param('ssssssss', $row['employee_name'], $row['department'], $row['type'], $archivedAt, $row['file_size'], $row['file_type_icon'], $filePath, $row['ocr_content']);
+          }
+          @$a->execute();
+          $a->close();
+        }
+      }
+
+      $inserted[] = [
+        'id' => $trackingId,
+        'type' => $row['type'],
+        'status' => $row['status'],
+        'department' => $row['department'],
+        'doc_hash' => $docHash,
+      ];
+    }
+
+    tracking_send_json($connection, [
+      'success' => true,
+      'batch_token' => $batchToken,
+      'inserted_count' => count($inserted),
+      'inserted' => $inserted,
+      'message' => 'Dummy tracking data seeded successfully.'
+    ]);
+  }
+
+  // Admin test harness: delete only dummy rows created for testing.
+  if (isset($_GET['action']) && $_GET['action'] === 'clear_dummy_tracking_data') {
+    Security::require_role(['admin']);
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
+      tracking_send_json($connection, ['success' => false, 'error' => 'POST required']);
+    }
+
+    $dummyIds = [];
+    if ($q = $connection->query("SELECT id FROM tracking WHERE employee_name LIKE '[TEST-DUMMY]%' OR doc_hash LIKE 'dummytest-%' OR mobile_timestamp LIKE 'dummyts-%' OR file_path LIKE 'uploads/dummy/%'")) {
+      while ($q && ($r = $q->fetch_assoc())) {
+        $dummyIds[] = (int)($r['id'] ?? 0);
+      }
+      $q->free();
+    }
+
+    $deletedHistory = 0;
+    $deletedTracking = 0;
+    $deletedDeptArchives = 0;
+    $deletedArchive = 0;
+    $deletedArchiveHistory = 0;
+
+    if (!empty($dummyIds)) {
+      $placeholders = implode(',', array_fill(0, count($dummyIds), '?'));
+      $types = str_repeat('i', count($dummyIds));
+
+      if ($h = $connection->prepare("DELETE FROM document_history WHERE doc_id IN ($placeholders)")) {
+        tracking_bind_params($h, $types, $dummyIds);
+        $h->execute();
+        $deletedHistory = max(0, (int)$h->affected_rows);
+        $h->close();
+      }
+
+      if ($__hasDeptArchives) {
+        if ($da = $connection->prepare("DELETE FROM department_archives WHERE tracking_id IN ($placeholders)")) {
+          tracking_bind_params($da, $types, $dummyIds);
+          $da->execute();
+          $deletedDeptArchives = max(0, (int)$da->affected_rows);
+          $da->close();
+        }
+      }
+
+      if ($t = $connection->prepare("DELETE FROM tracking WHERE id IN ($placeholders)")) {
+        tracking_bind_params($t, $types, $dummyIds);
+        $t->execute();
+        $deletedTracking = max(0, (int)$t->affected_rows);
+        $t->close();
+      }
+    }
+
+    $archiveIds = [];
+    if ($qa = $connection->query("SELECT id FROM archive WHERE document_name LIKE '[TEST-DUMMY]%' OR file_path LIKE 'uploads/dummy/%'")) {
+      while ($qa && ($r = $qa->fetch_assoc())) {
+        $archiveIds[] = (int)($r['id'] ?? 0);
+      }
+      $qa->free();
+    }
+    if (!empty($archiveIds)) {
+      $aph = implode(',', array_fill(0, count($archiveIds), '?'));
+      $atypes = str_repeat('i', count($archiveIds));
+      if ($ah = $connection->prepare("DELETE FROM archive_history WHERE archive_id IN ($aph)")) {
+        tracking_bind_params($ah, $atypes, $archiveIds);
+        $ah->execute();
+        $deletedArchiveHistory = max(0, (int)$ah->affected_rows);
+        $ah->close();
+      }
+      if ($ad = $connection->prepare("DELETE FROM archive WHERE id IN ($aph)")) {
+        tracking_bind_params($ad, $atypes, $archiveIds);
+        $ad->execute();
+        $deletedArchive = max(0, (int)$ad->affected_rows);
+        $ad->close();
+      }
+    }
+
+    tracking_send_json($connection, [
+      'success' => true,
+      'deleted' => [
+        'tracking' => $deletedTracking,
+        'document_history' => $deletedHistory,
+        'department_archives' => $deletedDeptArchives,
+        'archive' => $deletedArchive,
+        'archive_history' => $deletedArchiveHistory,
+      ],
+      'message' => 'Dummy tracking/archive test data deleted.'
+    ]);
+  }
+
+  // Admin test harness: detect archive consistency issues after archive actions.
+  if (isset($_GET['action']) && $_GET['action'] === 'debug_archive_consistency') {
+    Security::require_role(['admin']);
+
+    $report = [
+      'success' => true,
+      'generated_at' => date('c'),
+      'summary' => [
+        'dummy_tracking_total' => 0,
+        'dummy_tracking_archived' => 0,
+        'dummy_archive_total' => 0,
+        'archived_without_archive_copy' => 0,
+        'archive_without_tracking_source' => 0,
+      ],
+      'issues' => [
+        'archived_without_archive_copy' => [],
+        'archive_without_tracking_source' => [],
+      ],
+    ];
+
+    $trackingRows = [];
+    if ($tr = $connection->query("SELECT id, employee_name, type, status, department, current_holder, end_location, file_path, doc_hash, mobile_timestamp FROM tracking WHERE employee_name LIKE '[TEST-DUMMY]%' OR doc_hash LIKE 'dummytest-%' OR mobile_timestamp LIKE 'dummyts-%' OR file_path LIKE 'uploads/dummy/%'")) {
+      while ($tr && ($row = $tr->fetch_assoc())) {
+        $trackingRows[] = $row;
+      }
+      $tr->free();
+    }
+    $report['summary']['dummy_tracking_total'] = count($trackingRows);
+
+    $archiveByTrackingId = [];
+    $archiveRows = [];
+    $hasSourceTrackingId = __tracking_archive_has_source_tracking_id($connection);
+    $archiveSql = $hasSourceTrackingId
+      ? "SELECT id, source_tracking_id, document_name, type, status, date_archived, file_path FROM archive WHERE document_name LIKE '[TEST-DUMMY]%' OR file_path LIKE 'uploads/dummy/%' OR source_tracking_id IN (SELECT id FROM tracking WHERE employee_name LIKE '[TEST-DUMMY]%' OR doc_hash LIKE 'dummytest-%' OR mobile_timestamp LIKE 'dummyts-%' OR file_path LIKE 'uploads/dummy/%')"
+      : "SELECT id, NULL AS source_tracking_id, document_name, type, status, date_archived, file_path FROM archive WHERE document_name LIKE '[TEST-DUMMY]%' OR file_path LIKE 'uploads/dummy/%'";
+    if ($ar = $connection->query($archiveSql)) {
+      while ($ar && ($row = $ar->fetch_assoc())) {
+        $archiveRows[] = $row;
+        $srcId = (int)($row['source_tracking_id'] ?? 0);
+        if ($srcId > 0) {
+          $archiveByTrackingId[$srcId] = true;
+        }
+      }
+      $ar->free();
+    }
+    $report['summary']['dummy_archive_total'] = count($archiveRows);
+
+    foreach ($trackingRows as $row) {
+      $id = (int)($row['id'] ?? 0);
+      $statusNorm = strtoupper(trim((string)($row['status'] ?? '')));
+      if ($statusNorm === 'ARCHIVED') {
+        $report['summary']['dummy_tracking_archived']++;
+        if ($hasSourceTrackingId && empty($archiveByTrackingId[$id])) {
+          $report['issues']['archived_without_archive_copy'][] = [
+            'tracking_id' => $id,
+            'type' => $row['type'] ?? '',
+            'employee_name' => $row['employee_name'] ?? '',
+            'status' => $row['status'] ?? '',
+          ];
+        }
+      }
+    }
+
+    if ($hasSourceTrackingId) {
+      $trackingIdSet = [];
+      foreach ($trackingRows as $r) {
+        $trackingIdSet[(int)($r['id'] ?? 0)] = true;
+      }
+      foreach ($archiveRows as $row) {
+        $src = (int)($row['source_tracking_id'] ?? 0);
+        if ($src > 0 && !isset($trackingIdSet[$src])) {
+          $report['issues']['archive_without_tracking_source'][] = [
+            'archive_id' => (int)($row['id'] ?? 0),
+            'source_tracking_id' => $src,
+            'document_name' => $row['document_name'] ?? '',
+          ];
+        }
+      }
+    }
+
+    $report['summary']['archived_without_archive_copy'] = count($report['issues']['archived_without_archive_copy']);
+    $report['summary']['archive_without_tracking_source'] = count($report['issues']['archive_without_tracking_source']);
+    tracking_send_json($connection, $report);
+  }
+
 if (isset($_GET['action']) && $_GET['action'] === 'save_ocr_correction') {
   if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
     tracking_send_json($connection, ['success' => false, 'error' => 'Invalid request method']);
@@ -1460,11 +1818,25 @@ if (isset($_GET['action']) && $_GET['action'] === 'tracking_latest') {
     }
 
     $docs = [];
+    $__latestArchiveWhere = " AND UPPER(TRIM(COALESCE(status,''))) <> 'ARCHIVED'";
+    $__latestArchiveTypes = '';
+    $__latestArchiveParams = [];
+    if ($__hasDeptArchives) {
+      $__latestArchDept = $__isAdmin
+        ? 'ADMIN'
+        : strtoupper(trim($_SESSION['user_department'] ?? $_SESSION['department'] ?? ''));
+      if ($__latestArchDept !== '') {
+        $__latestArchiveWhere .= " AND NOT EXISTS (SELECT 1 FROM department_archives da WHERE da.tracking_id = tracking.id AND UPPER(TRIM(da.department)) = ?)";
+        $__latestArchiveTypes = 's';
+        $__latestArchiveParams = [$__latestArchDept];
+      }
+    }
+
     if ($sinceId > 0) {
-        $sql = "SELECT id,type,employee_name,department,current_holder,end_location,status,date_submitted,created_at,mobile_timestamp,file_type_icon,file_size,file_path,doc_hash,routing_queue,route_step FROM tracking WHERE id > ?" . $__latestDeptWhere . " ORDER BY id DESC LIMIT ?";
+      $sql = "SELECT id,type,employee_name,department,current_holder,end_location,status,date_submitted,created_at,mobile_timestamp,file_type_icon,file_size,file_path,doc_hash,routing_queue,route_step FROM tracking WHERE id > ?" . $__latestArchiveWhere . $__latestDeptWhere . " ORDER BY id DESC LIMIT ?";
         if ($stmt = $connection->prepare($sql)) {
-            $types = 'i' . $__latestDeptTypes . 'i';
-            $params = array_merge([$sinceId], $__latestDeptParams, [$limit]);
+        $types = 'i' . $__latestArchiveTypes . $__latestDeptTypes . 'i';
+        $params = array_merge([$sinceId], $__latestArchiveParams, $__latestDeptParams, [$limit]);
             $bind = [$types];
             foreach ($params as $k => &$v) { $bind[] = &$v; }
             call_user_func_array([$stmt, 'bind_param'], $bind);
@@ -1483,10 +1855,10 @@ if (isset($_GET['action']) && $_GET['action'] === 'tracking_latest') {
             $stmt->close();
         }
     } else {
-        $sql = "SELECT id,type,employee_name,department,current_holder,end_location,status,date_submitted,created_at,mobile_timestamp,file_type_icon,file_size,file_path,doc_hash,routing_queue,route_step FROM tracking WHERE 1=1" . $__latestDeptWhere . " ORDER BY id DESC LIMIT ?";
+      $sql = "SELECT id,type,employee_name,department,current_holder,end_location,status,date_submitted,created_at,mobile_timestamp,file_type_icon,file_size,file_path,doc_hash,routing_queue,route_step FROM tracking WHERE 1=1" . $__latestArchiveWhere . $__latestDeptWhere . " ORDER BY id DESC LIMIT ?";
         if ($stmt = $connection->prepare($sql)) {
-            $types = $__latestDeptTypes . 'i';
-            $params = array_merge($__latestDeptParams, [$limit]);
+        $types = $__latestArchiveTypes . $__latestDeptTypes . 'i';
+        $params = array_merge($__latestArchiveParams, $__latestDeptParams, [$limit]);
             if ($types === 'i') {
                 $stmt->bind_param('i', $params[0]);
             } else {
@@ -7319,6 +7691,21 @@ $connection->close();
         </div>
       </div>
       <div id="filtersChips" class="filters-chips"></div>
+      <?php if ($__isAdmin): ?>
+      <div id="dummyHarnessPanel" style="margin: 8px 0 14px 0; border: 1px dashed #cbd5e1; border-radius: 10px; padding: 10px 12px; background: #f8fafc;">
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+          <div style="font-size: 12px; color:#0f172a; font-weight:600;">
+            Admin Test Harness: Seed dummy documents, clear test data, and run archive consistency diagnostics.
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button class="action-button" id="seedDummyDataBtn" type="button" title="Insert realistic dummy tracking rows"><i class="fas fa-vial"></i> Seed Test Data</button>
+            <button class="action-button" id="debugArchiveConsistencyBtn" type="button" title="Detect archive/tracking mismatches"><i class="fas fa-bug"></i> Detect Archive Errors</button>
+            <button class="action-button" id="clearDummyDataBtn" type="button" title="Delete all seeded dummy rows"><i class="fas fa-trash"></i> Delete Dummy Data</button>
+          </div>
+        </div>
+        <div id="dummyHarnessOutput" style="display:none; margin-top:10px; background:#0f172a; color:#e2e8f0; border-radius:8px; padding:8px 10px; font-size:11px; max-height:180px; overflow:auto; white-space:pre-wrap;"></div>
+      </div>
+      <?php endif; ?>
       <div id="filtersBackdrop" class="filters-backdrop"></div>
       <div id="filtersPanel" class="filters-panel">
         <div class="filters-container">
@@ -10505,6 +10892,87 @@ $connection->close();
         setTimeout(() => {
             toast.remove();
         }, duration);
+    }
+
+    async function runDummyHarnessAction(actionName, successMessage) {
+      const outEl = document.getElementById('dummyHarnessOutput');
+      try {
+        const res = await fetch(`tracking.php?action=${encodeURIComponent(actionName)}`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        });
+        const data = await res.json();
+        if (!data || !data.success) {
+          throw new Error((data && (data.error || data.message)) || 'Request failed');
+        }
+        if (outEl) {
+          outEl.style.display = 'block';
+          outEl.textContent = JSON.stringify(data, null, 2);
+        }
+        showToast(successMessage, 'success');
+        if (actionName === 'seed_dummy_tracking_data' || actionName === 'clear_dummy_tracking_data') {
+          setTimeout(() => location.reload(), 700);
+        }
+      } catch (err) {
+        if (outEl) {
+          outEl.style.display = 'block';
+          outEl.textContent = String(err && err.message ? err.message : err);
+        }
+        showToast('Test harness error: ' + (err && err.message ? err.message : String(err)), 'error');
+      }
+    }
+
+    async function runDummyHarnessDebug() {
+      const outEl = document.getElementById('dummyHarnessOutput');
+      try {
+        const res = await fetch('tracking.php?action=debug_archive_consistency', {
+          method: 'GET',
+          cache: 'no-store',
+          credentials: 'include'
+        });
+        const data = await res.json();
+        if (!data || !data.success) {
+          throw new Error((data && (data.error || data.message)) || 'Debug check failed');
+        }
+        if (outEl) {
+          outEl.style.display = 'block';
+          outEl.textContent = JSON.stringify(data, null, 2);
+        }
+        const issueCount = ((data.summary && data.summary.archived_without_archive_copy) || 0) + ((data.summary && data.summary.archive_without_tracking_source) || 0);
+        showToast(issueCount > 0 ? `Archive checker found ${issueCount} issue(s).` : 'Archive checker found no dummy-data mismatches.', issueCount > 0 ? 'warning' : 'success');
+      } catch (err) {
+        if (outEl) {
+          outEl.style.display = 'block';
+          outEl.textContent = String(err && err.message ? err.message : err);
+        }
+        showToast('Archive checker failed: ' + (err && err.message ? err.message : String(err)), 'error');
+      }
+    }
+
+    const seedDummyDataBtn = document.getElementById('seedDummyDataBtn');
+    if (seedDummyDataBtn) {
+      seedDummyDataBtn.addEventListener('click', () => {
+        runDummyHarnessAction('seed_dummy_tracking_data', 'Dummy tracking data seeded.');
+      });
+    }
+
+    const debugArchiveConsistencyBtn = document.getElementById('debugArchiveConsistencyBtn');
+    if (debugArchiveConsistencyBtn) {
+      debugArchiveConsistencyBtn.addEventListener('click', () => {
+        runDummyHarnessDebug();
+      });
+    }
+
+    const clearDummyDataBtn = document.getElementById('clearDummyDataBtn');
+    if (clearDummyDataBtn) {
+      clearDummyDataBtn.addEventListener('click', () => {
+        openConfirmModal(
+          'Delete Dummy Data',
+          'Delete all seeded test rows from tracking/archive plus linked history? This only removes [TEST-DUMMY] rows.',
+          () => runDummyHarnessAction('clear_dummy_tracking_data', 'Dummy tracking data deleted.')
+        );
+      });
     }
 
     // --- Custom Confirmation Modal Functions ---
