@@ -1,10 +1,9 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
 import 'package:cunning_document_scanner/cunning_document_scanner.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_pdfview/flutter_pdfview.dart';
@@ -66,9 +65,6 @@ class _DashboardPageState extends State<DashboardPage>
   int _lastRealtimeRouteMs = 0;
   String _lastNotifSig = ''; // signature to skip redundant setState
   String _lastActivitySig = ''; // signature to skip redundant setState
-  bool _debugToolsEnabled = false;
-  Map<String, dynamic>? _lastRouteDebug;
-  Map<String, dynamic>? _lastReceiveDebug;
 
   late PageController _pageController;
 
@@ -619,23 +615,14 @@ class _DashboardPageState extends State<DashboardPage>
     _routingSub?.cancel();
     _routingSub = RoutingService.listenForDepartment(dept).listen(
       (routes) async {
-        if (!mounted) return;
-
-        if (routes.isEmpty) {
-          await _fetchRecentActivity();
-          return;
-        }
-
+        if (!mounted || routes.isEmpty) return;
         final newestMs = routes.fold<int>(0, (acc, m) {
           final v = (m['createdAtMs'] as int?) ?? 0;
           return max(acc, v);
         });
-
-        if (newestMs > 0) {
-          if (newestMs <= _lastRealtimeRouteMs) return;
-          _lastRealtimeRouteMs = newestMs;
-        }
-
+        if (newestMs <= 0) return;
+        if (newestMs <= _lastRealtimeRouteMs) return;
+        _lastRealtimeRouteMs = newestMs;
         await _fetchRecentActivity();
       },
       onError: (e) {
@@ -778,10 +765,10 @@ class _DashboardPageState extends State<DashboardPage>
                                     subtitle: Text([
                                       if (fromHolder.isNotEmpty ||
                                           toHolder.isNotEmpty)
-                                        '$fromHolder → $toHolder',
+                                        '$fromHolder ÔåÆ $toHolder',
                                       if (fromStatus.isNotEmpty ||
                                           toStatus.isNotEmpty)
-                                        '$fromStatus → $toStatus',
+                                        '$fromStatus ÔåÆ $toStatus',
                                       if (notes.isNotEmpty) notes,
                                       if (when.isNotEmpty) when,
                                     ].join('\n')),
@@ -1910,10 +1897,10 @@ class _DashboardPageState extends State<DashboardPage>
     String? fileUrl,
   }) async {
     try {
-      // Derive document name from subtitle like "Type • Name"
+      // Derive document name from subtitle like "Type ÔÇó Name"
       String name = subtitle.trim();
-      if (name.contains('•')) {
-        final parts = name.split('•');
+      if (name.contains('ÔÇó')) {
+        final parts = name.split('ÔÇó');
         if (parts.length >= 2) name = parts.last.trim();
       }
       final root = await _getServerRoot();
@@ -2297,10 +2284,10 @@ class _DashboardPageState extends State<DashboardPage>
     String? recipientDepartment,
   }) async {
     try {
-      // Resolve extension; also handle content patterns like "Type • DocumentName"
+      // Resolve extension; also handle content patterns like "Type ÔÇó DocumentName"
       String nameGuess = (fileName ?? '').trim();
-      if (nameGuess.contains('•')) {
-        final parts = nameGuess.split('•');
+      if (nameGuess.contains('ÔÇó')) {
+        final parts = nameGuess.split('ÔÇó');
         if (parts.length >= 2) {
           nameGuess = parts.last.trim();
         }
@@ -2511,9 +2498,9 @@ class _DashboardPageState extends State<DashboardPage>
   String _deriveDocType(String text, String? fallbackType) {
     try {
       String t = text.trim();
-      // Pattern: "Purchase Request • Carl" -> take left side
-      if (t.contains('•')) {
-        t = t.split('•').first.trim();
+      // Pattern: "Purchase Request ÔÇó Carl" -> take left side
+      if (t.contains('ÔÇó')) {
+        t = t.split('ÔÇó').first.trim();
       }
       // Pattern: "New Document from Carl" -> take left side
       if (t.contains(' from ')) {
@@ -2551,7 +2538,7 @@ class _DashboardPageState extends State<DashboardPage>
         ? (endLocation ?? '').trim()
         : initialReceiverDept;
     String resolvedType = docType.trim();
-    // Payroll fixed routing chain: HR → CBO → ACCOUNTING → CAO → CTO
+    // Payroll fixed routing chain: HR ÔåÆ CBO ÔåÆ ACCOUNTING ÔåÆ CAO ÔåÆ CTO
     const payrollFixedRoute = ['HR', 'CBO', 'ACCOUNTING', 'CAO', 'CTO'];
     bool isPayrollLocked = false;
     String? payrollNextDept;
@@ -2643,13 +2630,6 @@ class _DashboardPageState extends State<DashboardPage>
       int idx = -1;
       if (resolvedRouteStep != null && resolvedRouteStep >= 0) {
         idx = resolvedRouteStep;
-      }
-      final holderIdx = resolvedCurrentHolder.isNotEmpty
-          ? idxFromHint(resolvedCurrentHolder, activeRoute)
-          : -1;
-      if (holderIdx >= 0 && idx >= 0 && holderIdx != idx) {
-        // Use live holder when step hint is stale to avoid skipping departments.
-        idx = holderIdx;
       }
       if (idx < 0) {
         final holderSeed = resolvedCurrentHolder.isNotEmpty
@@ -2749,7 +2729,7 @@ class _DashboardPageState extends State<DashboardPage>
                                     ),
                                     const SizedBox(height: 2),
                                     Text(
-                                      'Payroll fixed route: ${(resolvedRoutingQueue.isNotEmpty ? resolvedRoutingQueue : payrollFixedRoute).join(' → ')}',
+                                      'Payroll fixed route: ${(resolvedRoutingQueue.isNotEmpty ? resolvedRoutingQueue : payrollFixedRoute).join(' ÔåÆ ')}',
                                       style: TextStyle(
                                           fontSize: 11,
                                           color: Colors.grey.shade600),
@@ -2881,11 +2861,9 @@ class _DashboardPageState extends State<DashboardPage>
       // a valid tracking_id or a stable mobile_timestamp from the original document.
       // Do NOT generate a new timestamp - that will create a new row!
       final hasTrackingId = (trackingId?.trim().isNotEmpty ?? false);
-      final hasStrongIdentity = hasTrackingId ||
-          (stableTs.isNotEmpty && (docHash?.trim().isNotEmpty ?? false));
       final int notifId = activityId ?? 0;
       final bool hasNotifId = notifId > 0;
-      if (!hasStrongIdentity) {
+      if (stableTs.isEmpty && !hasTrackingId && !hasNotifId) {
         final dbg = {
           'trackingId': (trackingId ?? '').trim(),
           'mobileTimestamp': (mobileTimestamp ?? '').trim(),
@@ -2902,7 +2880,7 @@ class _DashboardPageState extends State<DashboardPage>
               'tid=${(trackingId ?? '').trim()} ts=$stableTs hash=${(docHash ?? '').trim()}';
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text(
-                'Cannot route: requires tracking_id or mobile_timestamp+doc_hash. $short'),
+                'Cannot route: missing document identifier. $short (open details to copy debug)'),
             action: SnackBarAction(
               label: 'COPY',
               onPressed: () {
@@ -2977,57 +2955,11 @@ class _DashboardPageState extends State<DashboardPage>
           .post(uri, body: payload)
           .timeout(const Duration(seconds: 12));
       if (mounted) {
-        dynamic decodedBody;
-        try {
-          decodedBody = jsonDecode(r.body);
-        } catch (_) {
-          decodedBody = {'raw': r.body};
-        }
-
-        Map<String, dynamic>? postState;
-        try {
-          postState = await _fetchRoutingMeta(
-            trackingId: tid.isNotEmpty ? tid : null,
-            mobileTimestamp: stableTs.isNotEmpty ? stableTs : null,
-            docHash:
-                (docHash?.trim().isNotEmpty ?? false) ? docHash!.trim() : null,
-            filePath: filePath,
-          );
-        } catch (_) {
-          postState = null;
-        }
-
-        final routeDebug = <String, dynamic>{
-          'action': 'route',
-          'request': payload,
-          'response': decodedBody,
-          'http_status': r.statusCode,
-          'post_state': postState,
-          'timestamp': DateTime.now().toIso8601String(),
-        };
-        _lastRouteDebug = routeDebug;
-        final routeDebugText = _buildDebugSummaryAndJson(
-          action: 'route',
-          payload: routeDebug,
-        );
-
         // Check if server returned PHP source code (indicates server misconfiguration)
         if (r.body.contains('<?php') ||
             (r.body.contains('function ') && r.body.contains('\$'))) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text('Server error: PHP not executing. URL: $uri'),
-              action: _debugToolsEnabled
-                  ? SnackBarAction(
-                      label: 'DEBUG',
-                      onPressed: () {
-                        _showCopyableDebugDialog(
-                          title: 'Route Debug',
-                          message: routeDebugText,
-                          copyText: routeDebugText,
-                        );
-                      },
-                    )
-                  : null));
+              content: Text('Server error: PHP not executing. URL: $uri')));
           return;
         }
         if (r.statusCode < 400) {
@@ -3046,20 +2978,8 @@ class _DashboardPageState extends State<DashboardPage>
                 errorMsg = data['message'].toString();
               }
             } catch (_) {}
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                content: Text('Route failed: $errorMsg'),
-                action: _debugToolsEnabled
-                    ? SnackBarAction(
-                        label: 'DEBUG',
-                        onPressed: () {
-                          _showCopyableDebugDialog(
-                            title: 'Route Debug',
-                            message: routeDebugText,
-                            copyText: routeDebugText,
-                          );
-                        },
-                      )
-                    : null));
+            ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Route failed: $errorMsg')));
             return;
           }
 
@@ -3088,39 +3008,14 @@ class _DashboardPageState extends State<DashboardPage>
             });
           }
 
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: const Text('Routed'),
-            action: _debugToolsEnabled
-                ? SnackBarAction(
-                    label: 'DEBUG',
-                    onPressed: () {
-                      _showCopyableDebugDialog(
-                        title: 'Route Debug',
-                        message: routeDebugText,
-                        copyText: routeDebugText,
-                      );
-                    },
-                  )
-                : null,
-          ));
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('Routed')));
           try {
             await _fetchRecentActivity();
           } catch (_) {}
         } else {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text('Route failed (${r.statusCode}): ${r.body}'),
-              action: _debugToolsEnabled
-                  ? SnackBarAction(
-                      label: 'DEBUG',
-                      onPressed: () {
-                        _showCopyableDebugDialog(
-                          title: 'Route Debug',
-                          message: routeDebugText,
-                          copyText: routeDebugText,
-                        );
-                      },
-                    )
-                  : null));
+              content: Text('Route failed (${r.statusCode}): ${r.body}')));
         }
       }
     } catch (e) {
@@ -4380,22 +4275,6 @@ class _DashboardPageState extends State<DashboardPage>
       savedUsername = prefs.getString('user_name');
       savedEmail = prefs.getString('user_email');
       savedDept = prefs.getString('user_department');
-
-      final role = (prefs.getString('user_role') ??
-              prefs.getString('role') ??
-              prefs.getString('user_type') ??
-              '')
-          .trim()
-          .toLowerCase();
-      final isAdminFlag = prefs.getBool('is_admin') == true;
-      final debugOverride = prefs.getBool('enable_route_debug_tools') == true;
-      final usernameSeed =
-          (savedUsername ?? widget.username ?? '').trim().toLowerCase();
-      _debugToolsEnabled = kDebugMode ||
-          debugOverride ||
-          isAdminFlag ||
-          role == 'admin' ||
-          usernameSeed == 'admin';
     } catch (e) {}
 
     if (mounted) {
@@ -4801,68 +4680,20 @@ class _DashboardPageState extends State<DashboardPage>
       }
 
       // Helper: notification is for this user or for their department
-      String normalizeDepartment(String raw) {
-        final up = raw.trim().toUpperCase();
-        if (up.isEmpty) return '';
-        if (up.contains('ACCOUNTING')) return 'ACCOUNTING';
-        if (up == 'HR' || up.contains('HUMAN RESOURCE')) return 'HR';
-        if (up.contains('CBO')) return 'CBO';
-        if (up.contains('CAO')) return 'CAO';
-        if (up.contains('CTO')) return 'CTO';
-        if (up.contains('CPDO')) return 'CPDO';
-        if (up.contains('GSO')) return 'GSO';
-        if (up.contains('CACCO')) return 'CACCO';
-        if (up.contains('CADO')) return 'CADO';
-        if (up.contains('CMO')) return 'CMO';
-        return up;
-      }
-
       bool isForCurrentUserOrDepartment(Map m, String user, String dept) {
         if (isForCurrentUser(m, user)) {
           return true;
         }
-        final rd = normalizeDepartment(
-          (m['recipient_department'] ??
-                  m['recipientDepartment'] ??
-                  m['recipient_dept'] ??
-                  m['dept'] ??
-                  m['current_holder'] ??
-                  m['currentHolder'] ??
-                  m['end_location'] ??
-                  m['endLocation'] ??
-                  '')
-              .toString(),
-        );
-        final ud = normalizeDepartment(dept);
-        if (rd.isNotEmpty && rd == ud) {
+        final rd =
+            (m['recipient_department'] ?? m['recipient_dept'] ?? m['dept'])
+                ?.toString()
+                .trim()
+                .toUpperCase();
+        final ud = dept.trim().toUpperCase();
+        if (rd != null && rd.isNotEmpty && rd == ud) {
           return true;
         }
         return false;
-      }
-
-      bool shouldDisplayNotification(Map m) {
-        final docStatus = (m['doc_status'] ?? m['docStatus'] ?? '')
-            .toString()
-            .trim()
-            .toLowerCase();
-        if (docStatus == 'completed' ||
-            docStatus == 'archived' ||
-            docStatus == 'approved') {
-          return false;
-        }
-
-        final notifStatus = (m['status'] ?? '').toString().trim().toLowerCase();
-        if (notifStatus == 'completed') {
-          final hasTrackingIdentity =
-              (m['tracking_id']?.toString().trim().isNotEmpty ?? false) ||
-                  (m['trackingId']?.toString().trim().isNotEmpty ?? false) ||
-                  (m['mobile_timestamp']?.toString().trim().isNotEmpty ??
-                      false) ||
-                  (m['mobileTimestamp']?.toString().trim().isNotEmpty ?? false);
-          if (!hasTrackingIdentity) return false;
-        }
-
-        return true;
       }
 
       // 1) Prefer notifications API, then filter client-side for this user/department
@@ -4882,7 +4713,9 @@ class _DashboardPageState extends State<DashboardPage>
           // Keep only items explicitly for this user or their department
           final List list = listRaw
               .whereType<Map>()
-              .where((m) => shouldDisplayNotification(m))
+              // Hide soft-deleted rows
+              .where((m) =>
+                  (m['status']?.toString() ?? '').toLowerCase() != 'completed')
               .where((m) =>
                   isForCurrentUserOrDepartment(m, currentUser, currentDept))
               .toList();
@@ -4916,8 +4749,8 @@ class _DashboardPageState extends State<DashboardPage>
             final content =
                 (m['content']?.toString() ?? m['message']?.toString() ?? '')
                     .trim();
-            final parsedDocType = content.contains('•')
-                ? content.split('•').first.trim()
+            final parsedDocType = content.contains('ÔÇó')
+                ? content.split('ÔÇó').first.trim()
                 : content;
             // Prefer canonical type fields from API, then parsed message fallback.
             final apiDocType =
@@ -4951,7 +4784,7 @@ class _DashboardPageState extends State<DashboardPage>
             if (senderDept.isNotEmpty) subtitleParts.add(senderDept);
             if (when.isNotEmpty) subtitleParts.add(when);
             final displaySubtitle = subtitleParts.isNotEmpty
-                ? subtitleParts.join(' • ')
+                ? subtitleParts.join(' ÔÇó ')
                 : (m['time_ago']?.toString() ??
                     m['time']?.toString() ??
                     m['created_at']?.toString() ??
@@ -5009,7 +4842,10 @@ class _DashboardPageState extends State<DashboardPage>
                     (jm['notifications'] ?? jm['data'] ?? []) as List;
                 final deptItems = listD
                     .whereType<Map>()
-                    .where((m) => shouldDisplayNotification(m))
+                    // Hide soft-deleted rows
+                    .where((m) =>
+                        (m['status']?.toString() ?? '').toLowerCase() !=
+                        'completed')
                     .take(10)
                     .map<Map<String, dynamic>>((e) {
                   final m = Map<String, dynamic>.from(e);
@@ -5021,8 +4857,8 @@ class _DashboardPageState extends State<DashboardPage>
                           m['message']?.toString() ??
                           '')
                       .trim();
-                  final parsedDocType = content.contains('•')
-                      ? content.split('•').first.trim()
+                  final parsedDocType = content.contains('ÔÇó')
+                      ? content.split('ÔÇó').first.trim()
                       : content;
                   final apiDocType = (m['document_type'] ??
                           m['documentType'] ??
@@ -5056,7 +4892,7 @@ class _DashboardPageState extends State<DashboardPage>
                   if (senderDept.isNotEmpty) subtitleParts.add(senderDept);
                   if (when.isNotEmpty) subtitleParts.add(when);
                   final displaySubtitle = subtitleParts.isNotEmpty
-                      ? subtitleParts.join(' • ')
+                      ? subtitleParts.join(' ÔÇó ')
                       : (m['time_ago']?.toString() ??
                           m['time']?.toString() ??
                           m['created_at']?.toString() ??
@@ -5118,8 +4954,6 @@ class _DashboardPageState extends State<DashboardPage>
               'action': 'list',
               'limit': '20',
               'recipient_username': currentUser,
-              if (currentDept.trim().isNotEmpty)
-                'recipient_department': currentDept.trim(),
             });
             final r2 =
                 await http.get(notifUri2).timeout(const Duration(seconds: 10));
@@ -5136,8 +4970,8 @@ class _DashboardPageState extends State<DashboardPage>
                 final content =
                     (m['content']?.toString() ?? m['message']?.toString() ?? '')
                         .trim();
-                final parsedDocType = content.contains('•')
-                    ? content.split('•').first.trim()
+                final parsedDocType = content.contains('ÔÇó')
+                    ? content.split('ÔÇó').first.trim()
                     : content;
                 final apiDocType =
                     (m['document_type'] ?? m['documentType'] ?? '')
@@ -5271,8 +5105,6 @@ class _DashboardPageState extends State<DashboardPage>
           'action': 'list',
           'limit': '20',
           'recipient_username': currentUser,
-          if (currentDept.trim().isNotEmpty)
-            'recipient_department': currentDept.trim(),
         });
         try {
           final ru =
@@ -5696,13 +5528,6 @@ class _DashboardPageState extends State<DashboardPage>
                 ),
               ),
             ),
-          if (title == 'Recent Documents' && _debugToolsEnabled)
-            IconButton(
-              tooltip: 'Open Debug Center',
-              onPressed: _openDebugCenterDialog,
-              icon: const Icon(Icons.bug_report_outlined,
-                  color: Color(0xFF6868AC), size: 20),
-            ),
           if (onTap != null)
             TextButton(
               onPressed: onTap,
@@ -6020,7 +5845,7 @@ class _DashboardPageState extends State<DashboardPage>
     }
   }
 
-  /// Capture and upload a returned document — replaces file + OCR but does NOT
+  /// Capture and upload a returned document ÔÇö replaces file + OCR but does NOT
   /// mark the document as Completed. Returns `true` if upload succeeded so the
   /// caller can open the Route dialog afterwards.
   Future<bool> _captureAndUploadReturnedDocument({
@@ -6933,102 +6758,6 @@ class _DashboardPageState extends State<DashboardPage>
     );
   }
 
-  String _buildDebugSummaryAndJson({
-    required String action,
-    required Map<String, dynamic> payload,
-  }) {
-    final now = DateTime.now().toIso8601String();
-    final req = (payload['request'] is Map)
-        ? Map<String, dynamic>.from(payload['request'])
-        : <String, dynamic>{};
-    final diagnosis = (payload['response'] is Map &&
-            (payload['response'] as Map)['debug'] is Map &&
-            ((payload['response'] as Map)['debug'] as Map)['diagnosis'] is Map)
-        ? Map<String, dynamic>.from(
-            ((payload['response'] as Map)['debug'] as Map)['diagnosis'] as Map)
-        : <String, dynamic>{};
-
-    final summary = <String>[
-      'Action: ${action.toUpperCase()}',
-      'From: ${(req['sender_department'] ?? req['receiver_department'] ?? 'n/a')}',
-      'To: ${(req['receiver_department'] ?? 'n/a')}',
-      'Tracking ID: ${(req['tracking_id'] ?? payload['tracking_id'] ?? 'n/a')}',
-      'Expected Next: ${(diagnosis['expected_next_department'] ?? 'n/a')}',
-      'Actual Next: ${(diagnosis['actual_next_department'] ?? ((payload['post_state'] as Map?)?['current_holder'] ?? 'n/a'))}',
-      'Skip Detected: ${(diagnosis['skip_detected'] ?? false)}',
-      'Captured At: $now',
-    ].join('\n');
-
-    final prettyJson = const JsonEncoder.withIndent('  ').convert(payload);
-    return '$summary\n\nJSON:\n$prettyJson';
-  }
-
-  Future<void> _openDebugCenterDialog() async {
-    if (!_debugToolsEnabled || !mounted) return;
-
-    final routeDebug = _lastRouteDebug;
-    final receiveDebug = _lastReceiveDebug;
-    final hasAny = routeDebug != null || receiveDebug != null;
-
-    if (!hasAny) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No debug traces captured yet.')),
-      );
-      return;
-    }
-
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Routing Debug Center'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (routeDebug != null)
-              ElevatedButton.icon(
-                onPressed: () {
-                  final text = _buildDebugSummaryAndJson(
-                    action: 'route',
-                    payload: routeDebug,
-                  );
-                  _showCopyableDebugDialog(
-                    title: 'Route Debug',
-                    message: text,
-                    copyText: text,
-                  );
-                },
-                icon: const Icon(Icons.alt_route),
-                label: const Text('Latest Route Debug'),
-              ),
-            if (receiveDebug != null)
-              ElevatedButton.icon(
-                onPressed: () {
-                  final text = _buildDebugSummaryAndJson(
-                    action: 'receive',
-                    payload: receiveDebug,
-                  );
-                  _showCopyableDebugDialog(
-                    title: 'Receive Debug',
-                    message: text,
-                    copyText: text,
-                  );
-                },
-                icon: const Icon(Icons.download_done),
-                label: const Text('Latest Receive Debug'),
-              ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
-  }
-
   /// Show Return Document Dialog
   Future<void> _showReturnDocumentDialog({
     required String? trackingId,
@@ -7730,7 +7459,7 @@ class _DashboardPageState extends State<DashboardPage>
     }
   }
 
-  /// Show Add Attachment Dialog — captures a separate attachment document
+  /// Show Add Attachment Dialog ÔÇö captures a separate attachment document
   /// (does NOT replace the main document).
   Future<void> _showAddAttachmentDialog({
     required String? trackingId,
@@ -8399,83 +8128,8 @@ class _DashboardPageState extends State<DashboardPage>
                                               ? myDept
                                               : effectiveHolderDept;
 
-                                          String? effectiveTrackingId =
-                                              normalizedTrackingId;
-                                          if ((effectiveTrackingId
-                                                      ?.isNotEmpty ??
-                                                  false) ==
-                                              false) {
-                                            try {
-                                              effectiveTrackingId =
-                                                  await _resolveTrackingIdForAction(
-                                                actionLabel: 'Receive',
-                                                trackingId:
-                                                    normalizedTrackingId,
-                                                mobileTimestamp:
-                                                    normalizedMobileTimestamp,
-                                                docHash: normalizedDocHash,
-                                                filePath: resolvedFilePath,
-                                              );
-                                            } catch (_) {
-                                              effectiveTrackingId =
-                                                  normalizedTrackingId;
-                                            }
-                                          }
-
-                                          final hasStrongIdentity =
-                                              (effectiveTrackingId
-                                                          ?.isNotEmpty ??
-                                                      false) ||
-                                                  ((normalizedMobileTimestamp
-                                                              ?.isNotEmpty ??
-                                                          false) &&
-                                                      (normalizedDocHash
-                                                              ?.isNotEmpty ??
-                                                          false));
-                                          if (!hasStrongIdentity) {
-                                            final dbgPayload = {
-                                              'action': 'receive',
-                                              'identity_error':
-                                                  'identity_missing',
-                                              'tracking_id':
-                                                  normalizedTrackingId,
-                                              'mobile_timestamp':
-                                                  normalizedMobileTimestamp,
-                                              'doc_hash': normalizedDocHash,
-                                              'notification_id': id,
-                                            };
-                                            final txt =
-                                                const JsonEncoder.withIndent(
-                                                        '  ')
-                                                    .convert(dbgPayload);
-                                            _lastReceiveDebug =
-                                                Map<String, dynamic>.from(
-                                                    dbgPayload);
-                                            ScaffoldMessenger.of(context)
-                                                .showSnackBar(
-                                              SnackBar(
-                                                content: const Text(
-                                                    'Cannot receive: requires tracking_id or mobile_timestamp+doc_hash.'),
-                                                action: SnackBarAction(
-                                                  label: 'DEBUG',
-                                                  textColor: Colors.white,
-                                                  onPressed: () {
-                                                    _showCopyableDebugDialog(
-                                                      title: 'Receive Debug',
-                                                      message: txt,
-                                                      copyText: txt,
-                                                    );
-                                                  },
-                                                ),
-                                                backgroundColor:
-                                                    Colors.red.shade700,
-                                              ),
-                                            );
-                                            return;
-                                          }
-
                                           final result = await _markInReview(
-                                            effectiveTrackingId,
+                                            normalizedTrackingId,
                                             docType: (docType ?? title),
                                             receiverDepartment: receiverDept,
                                             endLocation: normalizedEndLocation,
@@ -8484,60 +8138,6 @@ class _DashboardPageState extends State<DashboardPage>
                                           if (!mounted) return;
 
                                           final ok = result['ok'] == true;
-
-                                          Map<String, dynamic>? postState;
-                                          try {
-                                            postState = await _fetchRoutingMeta(
-                                              trackingId: (normalizedTrackingId
-                                                          ?.isNotEmpty ??
-                                                      false)
-                                                  ? normalizedTrackingId
-                                                  : null,
-                                              mobileTimestamp:
-                                                  (normalizedMobileTimestamp
-                                                              ?.isNotEmpty ??
-                                                          false)
-                                                      ? normalizedMobileTimestamp
-                                                      : null,
-                                              docHash: (normalizedDocHash
-                                                          ?.isNotEmpty ??
-                                                      false)
-                                                  ? normalizedDocHash
-                                                  : null,
-                                              filePath:
-                                                  resolvedFilePath.isNotEmpty
-                                                      ? resolvedFilePath
-                                                      : null,
-                                            );
-                                          } catch (_) {
-                                            postState = null;
-                                          }
-
-                                          final receiveDebug =
-                                              <String, dynamic>{
-                                            'action': 'receive',
-                                            'request': {
-                                              'tracking_id':
-                                                  effectiveTrackingId,
-                                              'mobile_timestamp':
-                                                  normalizedMobileTimestamp,
-                                              'doc_hash': normalizedDocHash,
-                                              'file_path': resolvedFilePath,
-                                              'receiver_department':
-                                                  receiverDept,
-                                              'notification_id': id,
-                                            },
-                                            'response': result,
-                                            'post_state': postState,
-                                            'timestamp': DateTime.now()
-                                                .toIso8601String(),
-                                          };
-                                          _lastReceiveDebug = receiveDebug;
-                                          final receiveDebugText =
-                                              _buildDebugSummaryAndJson(
-                                            action: 'receive',
-                                            payload: receiveDebug,
-                                          );
 
                                           // Show success/failure feedback
                                           if (ok) {
@@ -8559,22 +8159,6 @@ class _DashboardPageState extends State<DashboardPage>
                                                     Colors.green.shade700,
                                                 duration:
                                                     const Duration(seconds: 2),
-                                                action: _debugToolsEnabled
-                                                    ? SnackBarAction(
-                                                        label: 'DEBUG',
-                                                        textColor: Colors.white,
-                                                        onPressed: () {
-                                                          _showCopyableDebugDialog(
-                                                            title:
-                                                                'Receive Debug',
-                                                            message:
-                                                                receiveDebugText,
-                                                            copyText:
-                                                                receiveDebugText,
-                                                          );
-                                                        },
-                                                      )
-                                                    : null,
                                               ),
                                             );
                                           } else {
@@ -8596,22 +8180,6 @@ class _DashboardPageState extends State<DashboardPage>
                                                     Colors.red.shade700,
                                                 duration:
                                                     const Duration(seconds: 3),
-                                                action: _debugToolsEnabled
-                                                    ? SnackBarAction(
-                                                        label: 'DEBUG',
-                                                        textColor: Colors.white,
-                                                        onPressed: () {
-                                                          _showCopyableDebugDialog(
-                                                            title:
-                                                                'Receive Debug',
-                                                            message:
-                                                                receiveDebugText,
-                                                            copyText:
-                                                                receiveDebugText,
-                                                          );
-                                                        },
-                                                      )
-                                                    : null,
                                               ),
                                             );
                                           }
@@ -8791,7 +8359,7 @@ class _DashboardPageState extends State<DashboardPage>
                                       }
                                       return;
                                     }
-                                    // Capture → OCR → edit → upload (does NOT mark Completed)
+                                    // Capture ÔåÆ OCR ÔåÆ edit ÔåÆ upload (does NOT mark Completed)
                                     final ok =
                                         await _captureAndUploadReturnedDocument(
                                       trackingId: tid,
@@ -10046,8 +9614,8 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
   }) async {
     try {
       String nameGuess = (fileName ?? '').trim();
-      if (nameGuess.contains('•')) {
-        final parts = nameGuess.split('•');
+      if (nameGuess.contains('ÔÇó')) {
+        final parts = nameGuess.split('ÔÇó');
         if (parts.length >= 2) nameGuess = parts.last.trim();
       }
       String urlGuess = (fileUrl ?? '').trim();
@@ -10159,8 +9727,8 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
   }) async {
     try {
       String name = subtitle.trim();
-      if (name.contains('•')) {
-        final parts = name.split('•');
+      if (name.contains('ÔÇó')) {
+        final parts = name.split('ÔÇó');
         if (parts.length >= 2) name = parts.last.trim();
       }
       final root = await _getServerRoot();
@@ -10407,8 +9975,8 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
   String _deriveDocType(String text, String? fallbackType) {
     try {
       String t = text.trim();
-      if (t.contains('•')) {
-        t = t.split('•').first.trim();
+      if (t.contains('ÔÇó')) {
+        t = t.split('ÔÇó').first.trim();
       }
       if (t.contains(' from ')) {
         t = t.split(' from ').first.trim();

@@ -1892,12 +1892,15 @@ if (isset($_GET['action']) && $_GET['action'] === 'tracking_latest') {
 if (isset($_GET['action']) && ($_GET['action'] === 'mark_received' || $_GET['action'] === 'mark_in_review')) {
     // Set to true to enable verbose error_log output for debugging
     $debug_logging = false;
+    $debug_receive = ((isset($_GET['debug']) && (string)$_GET['debug'] === '1')
+      || (isset($_POST['debug']) && (string)$_POST['debug'] === '1'));
     
     $id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
     $notification_id = isset($_GET['notification_id']) ? (int)$_GET['notification_id'] : 0;
     $type = isset($_GET['type']) ? trim($_GET['type']) : '';
     $end_location = isset($_GET['end_location']) ? trim($_GET['end_location']) : '';
     $receiver_department = isset($_GET['receiver_department']) ? trim($_GET['receiver_department']) : '';
+    $id_param_raw = isset($_GET['id']) ? (int)$_GET['id'] : 0;
     
     // If the client only has a notification id, resolve the tracking id from notifications.
     // This is the most reliable fallback because notifications store tracking_id.
@@ -2090,7 +2093,24 @@ if (isset($_GET['action']) && ($_GET['action'] === 'mark_received' || $_GET['act
     
     if ($id <= 0) {
         if ($debug_logging) error_log("[mark_in_review] FAIL: id=$id not found. GET params: " . json_encode($_GET));
-        tracking_send_json($connection, ['success' => false, 'error' => 'Invalid id or type/end_location not found']);
+        $out = ['success' => false, 'error' => 'Invalid id or type/end_location not found'];
+        if ($debug_receive) {
+          $out['debug'] = [
+            'request' => [
+              'id' => $id_param_raw,
+              'notification_id' => $notification_id,
+              'type' => $type,
+              'end_location' => $end_location,
+              'receiver_department' => $receiver_department,
+            ],
+            'resolution' => [
+              'source' => ($id_param_raw > 0) ? 'id_param' : 'lookup_failed',
+              'resolved_id' => $id,
+            ],
+            'timestamp' => round(microtime(true) * 1000),
+          ];
+        }
+        tracking_send_json($connection, $out);
         exit;
     }
 
@@ -2284,7 +2304,8 @@ if (isset($_GET['action']) && ($_GET['action'] === 'mark_received' || $_GET['act
                 $verSel->close();
             }
 
-            tracking_send_json($connection, [
+            $resolved_id_source = ($id_param_raw > 0) ? 'id_param' : 'lookup';
+            $out = [
                 'success' => true,
                 'id' => $id,
                 'affected' => $affected,
@@ -2292,13 +2313,62 @@ if (isset($_GET['action']) && ($_GET['action'] === 'mark_received' || $_GET['act
                 'new_status' => $target_status,
                 'current_holder' => $current_holder,
                 'verified_status' => $verify_status,
-            ]);
+            ];
+            if ($debug_receive) {
+              $out['debug'] = [
+                'request' => [
+                  'id' => $id_param_raw,
+                  'notification_id' => $notification_id,
+                  'type' => $type,
+                  'end_location' => $end_location,
+                  'receiver_department' => $receiver_department,
+                ],
+                'resolution' => [
+                  'source' => $resolved_id_source,
+                  'resolved_id' => $id,
+                ],
+                'before' => [
+                  'status' => $prev_status,
+                  'current_holder' => $prev_holder,
+                  'type' => $doc_type_row,
+                  'end_location' => $prev_end_location,
+                ],
+                'after' => [
+                  'status' => $target_status,
+                  'current_holder' => $current_holder,
+                  'verified_status' => $verify_status,
+                  'verified_holder' => $verify_holder,
+                ],
+                'timestamp' => round(microtime(true) * 1000),
+              ];
+            }
+            tracking_send_json($connection, $out);
             exit;
         }
         $stmt->close();
     }
     if ($debug_logging) error_log("[mark_in_review] UPDATE FAILED for id=$id");
-    tracking_send_json($connection, ['success' => false, 'error' => 'Update failed']);
+    $out = ['success' => false, 'error' => 'Update failed'];
+    if ($debug_receive) {
+      $out['debug'] = [
+        'request' => [
+          'id' => $id_param_raw,
+          'notification_id' => $notification_id,
+          'receiver_department' => $receiver_department,
+        ],
+        'resolution' => [
+          'source' => ($id_param_raw > 0) ? 'id_param' : 'lookup',
+          'resolved_id' => $id,
+        ],
+        'before' => [
+          'status' => $prev_status,
+          'current_holder' => $prev_holder,
+          'type' => $doc_type_row,
+        ],
+        'timestamp' => round(microtime(true) * 1000),
+      ];
+    }
+    tracking_send_json($connection, $out);
     exit;
 }
 
@@ -9090,6 +9160,9 @@ $connection->close();
                 <button class="action-button timeline" title="View Timeline" onclick="viewDocumentTimeline('${doc.id}')">
                   <i class="fas fa-history"></i> Timeline
                 </button>
+                <button class="action-button" title="Debug" onclick="openDocDebug('${doc.id}')" style="background:#0f172a;color:#fff;">
+                  <i class="fas fa-bug"></i> Debug
+                </button>
                 <button class="action-button archive" title="Archive" onclick="archiveDocumentConfirm('${doc.id}', '${displayType}')"
                   ${(doc.status === 'Archived' || doc.status === 'Rejected') ? 'disabled' : ''}>
                   <i class="fas fa-archive"></i> Archive
@@ -9198,6 +9271,7 @@ $connection->close();
               <div style="display:flex;gap:8px;flex-shrink:0;">
                 <button class="action-button info" onclick="viewDocumentInfo('${d.id}')" title="Document Info"><i class="fas fa-info-circle"></i></button>
                 <button class="action-button timeline" onclick="viewDocumentTimeline('${d.id}')" title="Document Timeline"><i class="fas fa-history"></i></button>
+                <button class="action-button" onclick="openDocDebug('${d.id}')" title="Debug"><i class="fas fa-bug"></i></button>
                 <button class="action-button archive" onclick="archiveDocumentConfirm('${d.id}', '${d.type}')" ${(d.status === 'Archived' || d.status === 'Rejected') ? 'disabled' : ''} title="Archive Document"><i class="fas fa-archive"></i></button>
               </div>
             </div>`;
@@ -9262,6 +9336,7 @@ $connection->close();
             <div style="display:flex;gap:8px;justify-content:flex-end;padding-top:8px;border-top:1px solid var(--border);">
               <button class="action-button info" onclick="viewDocumentInfo('${d.id}')" title="Document Info"><i class="fas fa-info-circle"></i></button>
               <button class="action-button timeline" onclick="viewDocumentTimeline('${d.id}')" title="Document Timeline"><i class="fas fa-history"></i></button>
+              <button class="action-button" onclick="openDocDebug('${d.id}')" title="Debug"><i class="fas fa-bug"></i></button>
               <button class="action-button archive" onclick="archiveDocumentConfirm('${d.id}', '${d.type}')" ${(d.status === 'Archived' || d.status === 'Rejected') ? 'disabled' : ''} title="Archive Document"><i class="fas fa-archive"></i></button>
             </div>`;
           docGridView.appendChild(card);
@@ -10411,6 +10486,35 @@ $connection->close();
         const timelineActivityLog = document.getElementById('timelineActivityLog');
         const timelineCurrentStatus = document.getElementById('timelineCurrentStatus');
         const timelineCurrentHolder = document.getElementById('timelineCurrentHolder');
+        const timelineHeader = timelineModal ? timelineModal.querySelector('.modal-header') : null;
+
+        if (timelineHeader && !document.getElementById('timelineDebugBtn')) {
+          const tools = document.createElement('div');
+          tools.style.cssText = 'margin-left:auto;display:flex;align-items:center;gap:8px;';
+          tools.innerHTML = `
+            <button id="timelineDebugCopyBtn" type="button" style="padding:6px 10px;border:1px solid #cbd5e1;background:#fff;border-radius:8px;cursor:pointer;font-size:12px;color:#334155;">
+              <i class="fas fa-copy"></i> Copy Debug
+            </button>
+            <button id="timelineDebugBtn" type="button" style="padding:6px 10px;border:none;background:#0f172a;color:#fff;border-radius:8px;cursor:pointer;font-size:12px;">
+              <i class="fas fa-bug"></i> Debug
+            </button>
+          `;
+          const closeBtn = timelineHeader.querySelector('.modal-close');
+          if (closeBtn) {
+            timelineHeader.insertBefore(tools, closeBtn);
+          } else {
+            timelineHeader.appendChild(tools);
+          }
+        }
+
+        const debugBtn = document.getElementById('timelineDebugBtn');
+        const debugCopyBtn = document.getElementById('timelineDebugCopyBtn');
+        if (debugBtn) {
+          debugBtn.onclick = () => openDocDebug(docId, doc);
+        }
+        if (debugCopyBtn) {
+          debugCopyBtn.onclick = () => copyDocDebug(docId, doc);
+        }
 
         // Set document name
         timelineDocumentName.textContent = doc.type;
@@ -12173,13 +12277,237 @@ $connection->close();
       echo json_encode($deptList);
     ?>;
 
+    window.__trackingDebugLog = window.__trackingDebugLog || [];
+    window.__trackingLastRouteDebug = window.__trackingLastRouteDebug || null;
+    window.__trackingDebugByDocId = window.__trackingDebugByDocId || {};
+    window.__trackingActionLocks = window.__trackingActionLocks || {};
+
+    function toPrettyJson(value) {
+      try {
+        return JSON.stringify(value, null, 2);
+      } catch (_) {
+        return String(value ?? '');
+      }
+    }
+
+    function buildDebugSummary(debugData) {
+      const d = debugData || {};
+      const req = d.request || {};
+      const diagnosis = (d.responseData && d.responseData.debug && d.responseData.debug.diagnosis) || {};
+      const expected = diagnosis.expected_next_department || 'n/a';
+      const actual = diagnosis.actual_next_department ||
+        ((d.postState && (d.postState.current_holder || d.postState.currentHolder)) || 'n/a');
+      const verdict = diagnosis.skip_detected ? 'SKIP DETECTED' : 'OK';
+      return [
+        `Action: ${(d.action || 'unknown').toUpperCase()}`,
+        `Doc ID: ${d.docId || 'n/a'}`,
+        `From: ${req.sender_department || req.receiver_department || 'n/a'}`,
+        `To: ${req.receiver_department || 'n/a'}`,
+        `Expected Next: ${expected}`,
+        `Actual Next: ${actual}`,
+        `Verdict: ${verdict}`,
+        `Timestamp: ${new Date(d.timestamp || Date.now()).toISOString()}`,
+      ].join('\n');
+    }
+
+    function debugCopyText(debugData) {
+      const summary = buildDebugSummary(debugData);
+      return `${summary}\n\nJSON:\n${toPrettyJson(debugData)}`;
+    }
+
+    async function copyDebugToClipboard(debugData) {
+      try {
+        await navigator.clipboard.writeText(debugCopyText(debugData));
+        showToast('Debug copied', 'success');
+      } catch (e) {
+        showToast('Copy failed: ' + (e && e.message ? e.message : e), 'error');
+      }
+    }
+
+    function ensureDebugFab() {
+      if (document.getElementById('routeDebugFab')) return;
+      const fab = document.createElement('button');
+      fab.id = 'routeDebugFab';
+      fab.type = 'button';
+      fab.title = 'Open latest route debugger';
+      fab.style.cssText = 'position:fixed;right:22px;bottom:22px;z-index:10030;background:#0f172a;color:#fff;border:none;border-radius:999px;padding:11px 14px;cursor:pointer;font-weight:700;font-size:12px;box-shadow:0 10px 24px rgba(0,0,0,0.25);display:none;';
+      fab.innerHTML = 'Debug';
+      fab.addEventListener('click', () => openRouteDebugModal(window.__trackingLastRouteDebug));
+      document.body.appendChild(fab);
+    }
+
+    function pushRouteDebug(debugData) {
+      const entry = Object.assign({ timestamp: Date.now() }, debugData || {});
+      window.__trackingLastRouteDebug = entry;
+      const docKey = (entry.docId ?? entry.tracking_id ?? '').toString().trim();
+      if (docKey) {
+        window.__trackingDebugByDocId[docKey] = entry;
+      }
+      window.__trackingDebugLog.unshift(entry);
+      if (window.__trackingDebugLog.length > 20) {
+        window.__trackingDebugLog = window.__trackingDebugLog.slice(0, 20);
+      }
+      ensureDebugFab();
+      const fab = document.getElementById('routeDebugFab');
+      if (fab) fab.style.display = 'inline-flex';
+      return entry;
+    }
+
+    function getDocDebugData(docId, docSnapshot) {
+      const key = (docId ?? '').toString().trim();
+      if (key && window.__trackingDebugByDocId[key]) {
+        return window.__trackingDebugByDocId[key];
+      }
+      if (window.__trackingLastRouteDebug) {
+        const lastKey = (window.__trackingLastRouteDebug.docId ?? '').toString().trim();
+        if (!key || key === lastKey) {
+          return window.__trackingLastRouteDebug;
+        }
+      }
+      if (!docSnapshot) return null;
+      return {
+        action: 'timeline_snapshot',
+        docId: key || (docSnapshot.id || ''),
+        request: {
+          sender_department: (docSnapshot.department || '').toString(),
+          receiver_department: (docSnapshot.current_holder || '').toString(),
+        },
+        postState: {
+          current_holder: docSnapshot.current_holder || '',
+          status: docSnapshot.status || '',
+          route_step: docSnapshot.route_step ?? null,
+          routing_queue: docSnapshot.routing_queue || '',
+        },
+        timeline: Array.isArray(docSnapshot.history) ? docSnapshot.history : [],
+        timestamp: Date.now(),
+      };
+    }
+
+    function openDocDebug(docId, docSnapshot) {
+      const debugData = getDocDebugData(docId, docSnapshot);
+      if (!debugData) {
+        showToast('No debug data captured yet for this document', 'error');
+        return;
+      }
+      openRouteDebugModal(debugData);
+    }
+
+    async function copyDocDebug(docId, docSnapshot) {
+      const debugData = getDocDebugData(docId, docSnapshot);
+      if (!debugData) {
+        showToast('No debug data captured yet for this document', 'error');
+        return;
+      }
+      await copyDebugToClipboard(debugData);
+    }
+
+    // Expose debug handlers globally because many buttons use inline onclick attributes.
+    window.openDocDebug = openDocDebug;
+    window.copyDocDebug = copyDocDebug;
+
+    function openRouteDebugModal(debugData) {
+      const data = debugData || window.__trackingLastRouteDebug;
+      if (!data) {
+        showToast('No debug data captured yet', 'error');
+        return;
+      }
+
+      const existing = document.getElementById('routeDebugModal');
+      if (existing) existing.remove();
+
+      const modal = document.createElement('div');
+      modal.id = 'routeDebugModal';
+      modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(2,6,23,0.65);z-index:10040;display:flex;align-items:center;justify-content:center;padding:18px;';
+      const summary = buildDebugSummary(data);
+      const jsonText = toPrettyJson(data);
+      modal.innerHTML = `
+        <div style="background:#fff;border-radius:14px;width:min(920px,96vw);max-height:90vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,0.28);">
+          <div style="padding:14px 18px;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;gap:8px;">
+            <strong style="font-size:16px;color:#0f172a;">Routing Debugger</strong>
+            <button id="routeDebugCopyBtn" style="margin-left:auto;background:#0f172a;color:#fff;border:none;border-radius:8px;padding:7px 12px;cursor:pointer;font-size:12px;">Copy</button>
+            <button id="routeDebugCloseBtn" style="background:#fff;color:#334155;border:1px solid #cbd5e1;border-radius:8px;padding:7px 12px;cursor:pointer;font-size:12px;">Close</button>
+          </div>
+          <div style="padding:14px 18px;background:#f8fafc;border-bottom:1px solid #e2e8f0;">
+            <pre style="margin:0;white-space:pre-wrap;word-break:break-word;font-size:12px;color:#0f172a;">${summary}</pre>
+          </div>
+          <div style="padding:14px 18px;overflow:auto;">
+            <pre style="margin:0;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.4;color:#0f172a;">${jsonText}</pre>
+          </div>
+        </div>`;
+      document.body.appendChild(modal);
+
+      const close = () => modal.remove();
+      modal.querySelector('#routeDebugCloseBtn')?.addEventListener('click', close);
+      modal.querySelector('#routeDebugCopyBtn')?.addEventListener('click', async () => {
+        await copyDebugToClipboard(data);
+      });
+      modal.addEventListener('click', (ev) => {
+        if (ev.target === modal) close();
+      });
+    }
+
+    // Expose modal opener globally for inline modal buttons.
+    window.openRouteDebugModal = openRouteDebugModal;
+
+    async function fetchDebugPostState(docId, mobileTs, docHash, filePath) {
+      try {
+        let verifyUrl = '';
+        if (docId) {
+          verifyUrl = window.location.pathname + '?action=doc_detail&id=' + encodeURIComponent(docId);
+        } else {
+          verifyUrl = window.location.pathname + '?action=resolve_identity'
+            + '&mobile_timestamp=' + encodeURIComponent(mobileTs || '')
+            + '&doc_hash=' + encodeURIComponent(docHash || '')
+            + '&file_path=' + encodeURIComponent(filePath || '');
+        }
+        const vr = await fetch(verifyUrl, { cache: 'no-store', credentials: 'include' });
+        const raw = await vr.text();
+        let parsed = null;
+        try { parsed = JSON.parse(raw); } catch (_) { parsed = { raw }; }
+        return { status: vr.status, data: parsed };
+      } catch (e) {
+        return { error: String(e) };
+      }
+    }
+
     async function webReceiveDocument(docId) {
       if (!confirm('Mark this document as Received?')) return;
+      const lockKey = 'receive:' + String(docId || '');
+      if (window.__trackingActionLocks[lockKey]) {
+        showToast('Receive request is already in progress', 'error');
+        return;
+      }
+      window.__trackingActionLocks[lockKey] = true;
       const dept = window.__trackingUserDept || '';
-      const url = window.location.pathname + '?action=mark_received&id=' + encodeURIComponent(docId) + '&receiver_department=' + encodeURIComponent(dept);
+      const url = window.location.pathname + '?action=mark_received&id=' + encodeURIComponent(docId) + '&receiver_department=' + encodeURIComponent(dept) + '&debug=1';
+      const requestDebug = {
+        sender_department: dept,
+        receiver_department: dept,
+        tracking_id: String(docId || ''),
+        action: 'mark_received',
+        url,
+      };
       try {
-        const resp = await fetch(url);
-        const data = await resp.json();
+        const resp = await fetch(url, { cache: 'no-store', credentials: 'include' });
+        const raw = await resp.text();
+        let data = null;
+        try {
+          data = JSON.parse(raw);
+        } catch (_) {
+          data = { success: false, error: 'Invalid JSON response', raw };
+        }
+
+        const postState = await fetchDebugPostState(docId, '', '', '');
+        pushRouteDebug({
+          action: 'receive',
+          docId,
+          request: requestDebug,
+          responseStatus: resp.status,
+          responseData: data,
+          responseRaw: raw,
+          postState: postState && postState.data ? postState.data : postState,
+        });
+
         if (data.success) {
           // Update row status badge
           const row = document.querySelector(`tr[data-id="${docId}"]`);
@@ -12195,7 +12523,15 @@ $connection->close();
           showToast('❌ ' + (data.error || 'Failed to receive'), 'error');
         }
       } catch (e) {
+        pushRouteDebug({
+          action: 'receive',
+          docId,
+          request: requestDebug,
+          error: String(e),
+        });
         showToast('❌ Network error: ' + e.message, 'error');
+      } finally {
+        delete window.__trackingActionLocks[lockKey];
       }
     }
 
@@ -12269,6 +12605,7 @@ $connection->close();
           </div>
           <div style="padding:12px 24px 20px;display:flex;gap:10px;justify-content:flex-end;border-top:1px solid #f1f5f9;">
             <button onclick="document.getElementById('routeDocumentModal').remove()" style="padding:10px 20px;border:1px solid #e2e8f0;background:#fff;border-radius:8px;cursor:pointer;font-weight:500;color:#64748b;">Cancel</button>
+            <button type="button" onclick="openRouteDebugModal(window.__trackingLastRouteDebug)" style="padding:10px 20px;border:1px solid #cbd5e1;background:#fff;border-radius:8px;cursor:pointer;font-weight:600;color:#334155;">Debug</button>
             <button id="routeSubmitBtn" onclick="submitRouteDocument('${docId}', '${docType}', '${empName}', '${currentHolder}', '${mobileTs}', '${docHash}', '${filePath}')"
               style="padding:10px 24px;background:#6868AC;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;display:flex;align-items:center;gap:6px;">
               <i class="fas fa-paper-plane"></i> Route
@@ -12299,6 +12636,13 @@ $connection->close();
       const endLoc = document.getElementById('routeEndLoc')?.value || '';
       if (!nextDept) { showToast('Please select a department', 'error'); return; }
 
+      const lockKey = 'route:' + String(docId || '');
+      if (window.__trackingActionLocks[lockKey]) {
+        showToast('Route request is already in progress', 'error');
+        return;
+      }
+      window.__trackingActionLocks[lockKey] = true;
+
       const btn = document.getElementById('routeSubmitBtn');
       if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Routing...'; }
 
@@ -12317,10 +12661,41 @@ $connection->close();
       formData.append('file_path', filePath || '');
       formData.append('end_location', endLoc || nextDept);
       formData.append('status', 'Pending');
+      formData.append('debug', '1');
+
+      const requestDebug = {
+        sender_name: senderName || empName,
+        sender_department: senderDept,
+        receiver_department: nextDept,
+        tracking_id: docId,
+        mobile_timestamp: mobileTs || '',
+        doc_hash: docHash || '',
+        file_path: filePath || '',
+        end_location: endLoc || nextDept,
+      };
 
       try {
-        const resp = await fetch(ROUTE_API, { method: 'POST', body: formData });
-        const data = await resp.json();
+        const resp = await fetch(ROUTE_API, { method: 'POST', body: formData, credentials: 'include' });
+        const raw = await resp.text();
+        let data = null;
+        try {
+          data = JSON.parse(raw);
+        } catch (_) {
+          data = { success: false, error: 'Invalid JSON response', raw };
+        }
+
+        const verifyId = (data && (data.tracking_id || data.track_id)) ? (data.tracking_id || data.track_id) : docId;
+        const postState = await fetchDebugPostState(verifyId, mobileTs, docHash, filePath);
+        pushRouteDebug({
+          action: 'route',
+          docId,
+          request: requestDebug,
+          responseStatus: resp.status,
+          responseData: data,
+          responseRaw: raw,
+          postState: postState && postState.data ? postState.data : postState,
+        });
+
         if (data.success || data.track_id || data.tracking_id) {
           document.getElementById('routeDocumentModal')?.remove();
           showToast('✅ Document routed to ' + nextDept + '!', 'success');
@@ -12330,8 +12705,16 @@ $connection->close();
           if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane"></i> Route'; }
         }
       } catch (e) {
+        pushRouteDebug({
+          action: 'route',
+          docId,
+          request: requestDebug,
+          error: String(e),
+        });
         showToast('❌ Network error: ' + e.message, 'error');
         if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane"></i> Route'; }
+      } finally {
+        delete window.__trackingActionLocks[lockKey];
       }
     }
 

@@ -248,8 +248,25 @@ if ($method === 'GET' && ($action === 'list' || $action === '')) {
     $params = [];
     $types = '';
 
-    if ($recipient !== '') { $conds[] = 'LOWER(TRIM(recipient_username)) = LOWER(TRIM(?))'; $params[] = $recipient; $types .= 's'; }
-    if ($recipientDept !== '') { $conds[] = 'LOWER(TRIM(recipient_department)) = LOWER(TRIM(?))'; $params[] = $recipientDept; $types .= 's'; }
+    if ($recipient !== '' && $recipientDept !== '') {
+        // When both are provided, match user-targeted OR department-targeted rows.
+        // Some legacy rows store department code in recipient_username.
+        $conds[] = '(LOWER(TRIM(recipient_username)) = LOWER(TRIM(?)) OR LOWER(TRIM(recipient_department)) = LOWER(TRIM(?)) OR LOWER(TRIM(recipient_username)) = LOWER(TRIM(?)))';
+        $params[] = $recipient;
+        $params[] = $recipientDept;
+        $params[] = $recipientDept;
+        $types .= 'sss';
+    } elseif ($recipient !== '') {
+        $conds[] = 'LOWER(TRIM(recipient_username)) = LOWER(TRIM(?))';
+        $params[] = $recipient;
+        $types .= 's';
+    } elseif ($recipientDept !== '') {
+        // Department-only query: accept explicit recipient_department or legacy dept key in recipient_username.
+        $conds[] = '(LOWER(TRIM(recipient_department)) = LOWER(TRIM(?)) OR LOWER(TRIM(recipient_username)) = LOWER(TRIM(?)))';
+        $params[] = $recipientDept;
+        $params[] = $recipientDept;
+        $types .= 'ss';
+    }
     if ($type !== '') { $conds[] = 'type = ?'; $params[] = $type; $types .= 's'; }
 
     // By default, hide completed rows (we use status='completed' as a soft-delete for dashboards)

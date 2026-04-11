@@ -5856,11 +5856,39 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       bool uploadSuccess = false;
       try {
         final decoded = json.decode(body);
-        if (decoded is Map && decoded['status'] == 'success') {
-          uploadSuccess = true;
+        if (decoded is Map) {
+          final statusRaw = (decoded['status'] ?? '').toString().trim();
+          final successRaw = decoded['success'];
+          final messageRaw =
+              (decoded['message'] ?? decoded['msg'] ?? '').toString();
+
+          final statusOk = statusRaw.toLowerCase() == 'success';
+          final successOk = successRaw == true ||
+              successRaw == 1 ||
+              successRaw?.toString().toLowerCase() == 'true';
+          final messageOk =
+              RegExp(r'success|uploaded|saved', caseSensitive: false)
+                  .hasMatch(messageRaw);
+
+          uploadSuccess = statusOk || successOk || messageOk;
         }
       } catch (e) {
         debugPrint('⚠️ JSON decode failed: $e');
+        // Some PHP responses can include notices before JSON.
+        // Accept explicit success signatures in raw response text.
+        final normalized = body.toLowerCase();
+        uploadSuccess =
+            RegExp(r'"status"\s*:\s*"success"').hasMatch(normalized) ||
+                RegExp(r'"success"\s*:\s*(true|1)').hasMatch(normalized) ||
+                normalized.contains('upload successful') ||
+                normalized.contains('saved successfully');
+      }
+
+      if (!uploadSuccess && body.isNotEmpty) {
+        final preview =
+            body.length > 220 ? '${body.substring(0, 220)}...' : body;
+        debugPrint(
+            '⚠️ Upload returned 200 but was not recognized as success. Body: $preview');
       }
 
       // --- Routing & Notifications (regardless of upload result so receiver sees it) ---
@@ -5874,9 +5902,55 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         toDept: nextDepartment,
         endLocation: endLocation,
       );
+
+      if (!uploadSuccess) {
+        final verified = await _verifyUploadPersisted(
+          mobileTimestamp: stableTimestamp,
+          docHash: docHash,
+        );
+        if (verified) {
+          uploadSuccess = true;
+          debugPrint(
+              '✅ Upload verified via tracking identity lookup despite ambiguous response body.');
+        }
+      }
+
       return uploadSuccess;
     } catch (e) {
       debugPrint('❌ Upload exception: $e');
+      return false;
+    }
+  }
+
+  Future<bool> _verifyUploadPersisted({
+    required String mobileTimestamp,
+    required String docHash,
+  }) async {
+    try {
+      final String trackingUrl = await _resolveServerPath(
+        '/lib/OCR(UPDATED)/tracking.php',
+        fallback:
+            '${ServerService.defaultServerRoot}/lib/OCR(UPDATED)/tracking.php',
+      );
+
+      final uri = Uri.parse(trackingUrl).replace(queryParameters: {
+        'action': 'resolve_identity',
+        if (mobileTimestamp.trim().isNotEmpty)
+          'mobile_timestamp': mobileTimestamp.trim(),
+        if (docHash.trim().isNotEmpty) 'doc_hash': docHash.trim(),
+      });
+
+      final r = await http.get(uri).timeout(const Duration(seconds: 10));
+      if (r.statusCode != 200 || r.body.isEmpty) return false;
+
+      final decoded = json.decode(r.body);
+      if (decoded is Map) {
+        if (decoded['success'] == true) return true;
+        final doc = decoded['doc'];
+        if (doc is Map && doc.isNotEmpty) return true;
+      }
+      return false;
+    } catch (_) {
       return false;
     }
   }

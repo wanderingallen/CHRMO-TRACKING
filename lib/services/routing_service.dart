@@ -68,21 +68,22 @@ class RoutingService {
       String department) {
     final deptNorm = _normDept(department);
 
-    return _firestore
-        .collection(_collection)
+    final collection = _firestore.collection(_collection);
+    final primaryQuery = collection
         .where('toDepartment', isEqualTo: deptNorm)
         .orderBy('createdAt', descending: true)
-        .limit(50)
-        .snapshots()
-        .handleError((e, st) {
-      if (e is FirebaseException) {
-        debugPrint(
-            '❌ Firestore listenForDepartment failed (${e.code}): ${e.message ?? e.toString()}');
-      } else {
-        debugPrint('❌ Firestore listenForDepartment failed: $e');
-      }
-    }).map((snapshot) {
-      return snapshot.docs
+        .limit(50);
+    final fallbackQuery =
+        collection.where('toDepartment', isEqualTo: deptNorm).limit(200);
+
+    final controller = StreamController<List<Map<String, dynamic>>>();
+    StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? sub;
+    bool switchedToFallback = false;
+
+    List<Map<String, dynamic>> mapDocs(
+      List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+    ) {
+      return docs
           .map((doc) {
             final data = doc.data();
             final String status = (data['status'] ?? 'pending').toString();
@@ -121,7 +122,59 @@ class RoutingService {
           })
           .whereType<Map<String, dynamic>>()
           .toList();
-    });
+    }
+
+    void attachFallback() {
+      sub = fallbackQuery.snapshots().listen(
+        (snapshot) {
+          final items = mapDocs(snapshot.docs)
+            ..sort((a, b) => ((b['createdAtMs'] as int?) ?? 0)
+                .compareTo((a['createdAtMs'] as int?) ?? 0));
+          controller.add(items.take(50).toList());
+        },
+        onError: (e, st) {
+          if (e is FirebaseException) {
+            debugPrint(
+                '❌ Firestore fallback listen failed (${e.code}): ${e.message ?? e.toString()}');
+          } else {
+            debugPrint('❌ Firestore fallback listen failed: $e');
+          }
+          controller.addError(e, st);
+        },
+      );
+    }
+
+    sub = primaryQuery.snapshots().listen(
+      (snapshot) {
+        controller.add(mapDocs(snapshot.docs));
+      },
+      onError: (e, st) async {
+        if (!switchedToFallback &&
+            e is FirebaseException &&
+            e.code == 'failed-precondition') {
+          switchedToFallback = true;
+          debugPrint(
+              '⚠️ Firestore index missing for routing listener; using fallback query for $deptNorm');
+          await sub?.cancel();
+          attachFallback();
+          return;
+        }
+
+        if (e is FirebaseException) {
+          debugPrint(
+              '❌ Firestore listenForDepartment failed (${e.code}): ${e.message ?? e.toString()}');
+        } else {
+          debugPrint('❌ Firestore listenForDepartment failed: $e');
+        }
+        controller.addError(e, st);
+      },
+    );
+
+    controller.onCancel = () async {
+      await sub?.cancel();
+    };
+
+    return controller.stream;
   }
 
   /// Update status of a routed document
