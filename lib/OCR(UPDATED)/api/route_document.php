@@ -1008,6 +1008,7 @@ try {
     // Best-effort migrations (older installs)
     @$conn->query("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS tracking_id INT NULL");
     @$conn->query("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS mobile_timestamp VARCHAR(128) NULL");
+    @$conn->query("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS doc_hash VARCHAR(128) NULL");
     @$conn->query("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS end_location VARCHAR(128) NULL");
     @$conn->query("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS current_holder VARCHAR(128) NULL");
     @$conn->query("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS doc_status VARCHAR(64) NULL");
@@ -1058,15 +1059,16 @@ try {
       ];
     }
 
-    if ($insN = $conn->prepare("INSERT INTO notifications (title, content, type, recipient_username, sender_username, department, recipient_department, status, file_url, tracking_id, mobile_timestamp, end_location, current_holder, doc_status) VALUES (?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ? )")) {
+    if ($insN = $conn->prepare("INSERT INTO notifications (title, content, type, recipient_username, sender_username, department, recipient_department, status, file_url, tracking_id, mobile_timestamp, doc_hash, end_location, current_holder, doc_status) VALUES (?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ? )")) {
       $dept = $sender_department;
       $fileUrl = $file_path;
       $tid = (int)$track_id;
       $mts = (string)$mobile_timestamp;
+      $dh = (string)$doc_hash;
       $end = (string)$end_location;
       $holder = (string)$current_holder;
       $docStatus = (string)$status;
-      $insN->bind_param('ssssssssisssss', $notifTitle, $notifContent, $notifType, $recipientUser, $sender_name, $dept, $receiver_department, $fileUrl, $tid, $mts, $end, $holder, $docStatus);
+      $insN->bind_param('ssssssssisssss', $notifTitle, $notifContent, $notifType, $recipientUser, $sender_name, $dept, $receiver_department, $fileUrl, $tid, $mts, $dh, $end, $holder, $docStatus);
       $insN->execute();
       $newNotifId = $insN->insert_id;
       $insN->close();
@@ -1087,6 +1089,7 @@ try {
             'file_url' => (string)$fileUrl,
             'tracking_id' => (int)$tid,
             'mobile_timestamp' => (string)$mts,
+            'doc_hash' => (string)$dh,
             'end_location' => (string)$end,
             'current_holder' => (string)$holder,
             'doc_status' => (string)$docStatus,

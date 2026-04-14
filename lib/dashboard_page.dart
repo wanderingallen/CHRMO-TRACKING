@@ -192,6 +192,90 @@ class _DashboardPageState extends State<DashboardPage>
     }
   }
 
+  Future<Map<String, String>> _resolveIdentityFromNotificationId({
+    required int notificationId,
+    String? fallbackFilePath,
+    String? fallbackType,
+    String? fallbackEndLocation,
+  }) async {
+    final out = <String, String>{};
+    if (notificationId <= 0) return out;
+
+    String normalize(dynamic value) {
+      if (value == null) return '';
+      final s = value.toString().trim();
+      return s;
+    }
+
+    try {
+      final root = await _getServerRoot();
+      if (root == null) return out;
+
+      final notifUri = Uri.parse('$root/lib/OCR(UPDATED)/api/notifications.php')
+          .replace(queryParameters: {
+        'action': 'get',
+        'id': notificationId.toString(),
+      });
+      final nr = await http.get(notifUri).timeout(const Duration(seconds: 8));
+      if (nr.statusCode == 200 && nr.body.isNotEmpty) {
+        final decoded = jsonDecode(nr.body);
+        final notifRaw = (decoded is Map)
+            ? (decoded['notification'] ?? decoded['data'] ?? decoded)
+            : null;
+        if (notifRaw is Map) {
+          final notif = Map<String, dynamic>.from(notifRaw);
+          final tid = normalize(notif['tracking_id'] ?? notif['trackingId']);
+          final mts =
+              normalize(notif['mobile_timestamp'] ?? notif['mobileTimestamp']);
+          final dh = normalize(notif['doc_hash'] ?? notif['docHash']);
+          final fp = normalize(notif['file_url'] ??
+              notif['file_path'] ??
+              notif['fileUrl'] ??
+              fallbackFilePath);
+          final t = normalize(notif['type'] ?? fallbackType);
+          final end = normalize(notif['end_location'] ??
+              notif['endLocation'] ??
+              fallbackEndLocation);
+
+          if (tid.isNotEmpty) out['trackingId'] = tid;
+          if (mts.isNotEmpty) out['mobileTimestamp'] = mts;
+          if (dh.isNotEmpty) out['docHash'] = dh;
+          if (fp.isNotEmpty) out['filePath'] = fp;
+          if (t.isNotEmpty) out['type'] = t;
+          if (end.isNotEmpty) out['endLocation'] = end;
+        }
+      }
+
+      if (!out.containsKey('trackingId') ||
+          !out.containsKey('mobileTimestamp') ||
+          !out.containsKey('docHash')) {
+        final meta = await _fetchRoutingMeta(
+          trackingId: out['trackingId'],
+          mobileTimestamp: out['mobileTimestamp'],
+          docHash: out['docHash'],
+          filePath: out['filePath'] ?? fallbackFilePath,
+        );
+        if (meta != null) {
+          final id = normalize(meta['id']);
+          final mts =
+              normalize(meta['mobile_timestamp'] ?? meta['mobileTimestamp']);
+          final dh = normalize(meta['doc_hash'] ?? meta['docHash']);
+          final fp = normalize(meta['file_path'] ?? meta['filePath']);
+          final t = normalize(meta['type']);
+          final end = normalize(meta['end_location'] ?? meta['endLocation']);
+          if (id.isNotEmpty) out['trackingId'] = id;
+          if (mts.isNotEmpty) out['mobileTimestamp'] = mts;
+          if (dh.isNotEmpty) out['docHash'] = dh;
+          if (fp.isNotEmpty) out['filePath'] = fp;
+          if (t.isNotEmpty) out['type'] = t;
+          if (end.isNotEmpty) out['endLocation'] = end;
+        }
+      }
+    } catch (_) {}
+
+    return out;
+  }
+
   Future<void> _showEditUpdateDocumentDialog({
     required String? trackingId,
     required String? mobileTimestamp,
@@ -2852,8 +2936,12 @@ class _DashboardPageState extends State<DashboardPage>
     String? trackingId,
     int? activityId,
   }) async {
-    final stableTs = mobileTimestamp?.trim() ?? '';
-    final tid = trackingId?.trim() ?? '';
+    var stableTs = mobileTimestamp?.trim() ?? '';
+    var tid = trackingId?.trim() ?? '';
+    var resolvedDocHash = docHash?.trim() ?? '';
+    var resolvedFilePath = filePath.trim();
+    var effectiveType = type.trim();
+    var effectiveEndLocation = endLocation.trim();
     final nextDeptUpper = nextDepartment.trim().toUpperCase();
     try {
       final root = await _getServerRoot();
@@ -2877,29 +2965,65 @@ class _DashboardPageState extends State<DashboardPage>
       }
 
       final uri = Uri.parse('$root/lib/OCR(UPDATED)/api/route_document.php');
+      final int notifId = activityId ?? 0;
+      final bool hasNotifId = notifId > 0;
+
+      // If identity fields are missing on this card, try recovering them from
+      // notification id before enforcing strict route preflight.
+      if (tid.isEmpty &&
+          (stableTs.isEmpty || resolvedDocHash.isEmpty) &&
+          hasNotifId) {
+        final recovered = await _resolveIdentityFromNotificationId(
+          notificationId: notifId,
+          fallbackFilePath: resolvedFilePath,
+          fallbackType: effectiveType,
+          fallbackEndLocation: effectiveEndLocation,
+        );
+        final recTid = (recovered['trackingId'] ?? '').trim();
+        final recTs = (recovered['mobileTimestamp'] ?? '').trim();
+        final recHash = (recovered['docHash'] ?? '').trim();
+        final recPath = (recovered['filePath'] ?? '').trim();
+        final recType = (recovered['type'] ?? '').trim();
+        final recEnd = (recovered['endLocation'] ?? '').trim();
+
+        if (recTid.isNotEmpty) tid = recTid;
+        if (recTs.isNotEmpty) stableTs = recTs;
+        if (recHash.isNotEmpty) resolvedDocHash = recHash;
+        if (recPath.isNotEmpty) resolvedFilePath = recPath;
+        if (recType.isNotEmpty) effectiveType = recType;
+        if (recEnd.isNotEmpty) effectiveEndLocation = recEnd;
+      }
+
       // CRITICAL: For routing to work (updating existing row), we need either
       // a valid tracking_id or a stable mobile_timestamp from the original document.
       // Do NOT generate a new timestamp - that will create a new row!
-      final hasTrackingId = (trackingId?.trim().isNotEmpty ?? false);
-      final hasStrongIdentity = hasTrackingId ||
-          (stableTs.isNotEmpty && (docHash?.trim().isNotEmpty ?? false));
-      final int notifId = activityId ?? 0;
-      final bool hasNotifId = notifId > 0;
-      if (!hasStrongIdentity) {
+      final hasTrackingId = tid.isNotEmpty;
+      final hasStrongIdentity =
+          hasTrackingId || (stableTs.isNotEmpty && resolvedDocHash.isNotEmpty);
+      if (!hasStrongIdentity && !hasNotifId) {
+        final missing = <String>[];
+        if (!hasTrackingId) {
+          if (stableTs.isEmpty) missing.add('mobile_timestamp');
+          if (resolvedDocHash.isEmpty) missing.add('doc_hash');
+        }
         final dbg = {
-          'trackingId': (trackingId ?? '').trim(),
-          'mobileTimestamp': (mobileTimestamp ?? '').trim(),
-          'docHash': (docHash ?? '').trim(),
-          'filePath': filePath,
+          'error': 'identity_missing',
+          'requires': 'tracking_id OR (mobile_timestamp + doc_hash)',
+          'missing': missing,
+          'trackingId': tid,
+          'mobileTimestamp': stableTs,
+          'docHash': resolvedDocHash,
+          'filePath': resolvedFilePath,
           'fileName': fileName,
-          'type': type,
-          'endLocation': endLocation,
+          'type': effectiveType,
+          'endLocation': effectiveEndLocation,
           'nextDepartment': nextDepartment,
           'activityId': activityId?.toString() ?? '',
         };
         if (mounted) {
-          final short =
-              'tid=${(trackingId ?? '').trim()} ts=$stableTs hash=${(docHash ?? '').trim()}';
+          final short = missing.isNotEmpty
+              ? 'missing=${missing.join('+')}'
+              : 'tid=$tid ts=$stableTs hash=$resolvedDocHash';
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
             content: Text(
                 'Cannot route: requires tracking_id or mobile_timestamp+doc_hash. $short'),
@@ -2913,20 +3037,15 @@ class _DashboardPageState extends State<DashboardPage>
         }
         return;
       }
-      String effectiveType = type.trim();
-      String effectiveEndLocation = endLocation.trim();
 
       // When identity exists, prefer canonical server values to avoid
       // accidentally changing document type/end location during re-routing.
-      if (tid.isNotEmpty ||
-          stableTs.isNotEmpty ||
-          (docHash?.trim().isNotEmpty ?? false)) {
+      if (tid.isNotEmpty || stableTs.isNotEmpty || resolvedDocHash.isNotEmpty) {
         try {
           final meta = await _fetchRoutingMeta(
             trackingId: tid.isNotEmpty ? tid : null,
             mobileTimestamp: stableTs.isNotEmpty ? stableTs : null,
-            docHash:
-                (docHash?.trim().isNotEmpty ?? false) ? docHash!.trim() : null,
+            docHash: resolvedDocHash.isNotEmpty ? resolvedDocHash : null,
           );
           if (meta != null) {
             final serverType = (meta['type'] ?? '').toString().trim();
@@ -2951,7 +3070,7 @@ class _DashboardPageState extends State<DashboardPage>
         'receiver_department': nextDepartment,
         'type': effectiveType,
         'file_name': fileName,
-        'file_path': filePath,
+        'file_path': resolvedFilePath,
         'mobile_timestamp': stableTs,
         'base': root,
         'next_department': nextDepartment,
@@ -2967,11 +3086,11 @@ class _DashboardPageState extends State<DashboardPage>
         // allow server to resolve identifiers from notifications.id
         payload['notification_id'] = notifId.toString();
       }
-      if (docHash?.trim().isNotEmpty ?? false) {
-        payload['doc_hash'] = docHash!.trim();
+      if (resolvedDocHash.isNotEmpty) {
+        payload['doc_hash'] = resolvedDocHash;
       }
-      if (trackingId?.trim().isNotEmpty ?? false) {
-        payload['tracking_id'] = trackingId!.trim();
+      if (tid.isNotEmpty) {
+        payload['tracking_id'] = tid;
       }
       final r = await http
           .post(uri, body: payload)
@@ -2989,9 +3108,8 @@ class _DashboardPageState extends State<DashboardPage>
           postState = await _fetchRoutingMeta(
             trackingId: tid.isNotEmpty ? tid : null,
             mobileTimestamp: stableTs.isNotEmpty ? stableTs : null,
-            docHash:
-                (docHash?.trim().isNotEmpty ?? false) ? docHash!.trim() : null,
-            filePath: filePath,
+            docHash: resolvedDocHash.isNotEmpty ? resolvedDocHash : null,
+            filePath: resolvedFilePath,
           );
         } catch (_) {
           postState = null;

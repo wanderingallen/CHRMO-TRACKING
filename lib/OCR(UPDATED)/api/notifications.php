@@ -52,6 +52,7 @@ $conn->query("CREATE TABLE IF NOT EXISTS notifications (
 @$conn->query("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'new'");
 @$conn->query("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS tracking_id INT NULL");
 @$conn->query("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS mobile_timestamp VARCHAR(128) NULL");
+@$conn->query("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS doc_hash VARCHAR(128) NULL");
 @$conn->query("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS end_location VARCHAR(128) NULL");
 @$conn->query("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS current_holder VARCHAR(128) NULL");
 @$conn->query("ALTER TABLE notifications ADD COLUMN IF NOT EXISTS doc_status VARCHAR(64) NULL");
@@ -112,6 +113,7 @@ if (($method === 'POST' && ($action === 'create' || $action === '')) ||
     $fileUrl = trim((string)($src['file_url'] ?? ($src['url'] ?? ($src['attachment'] ?? ''))));
     $trackingId = isset($src['tracking_id']) ? intval($src['tracking_id']) : null;
     $mobileTimestamp = trim((string)($src['mobile_timestamp'] ?? ''));
+    $docHash = trim((string)($src['doc_hash'] ?? ''));
     $endLocation = trim((string)($src['end_location'] ?? ''));
     $currentHolder = trim((string)($src['current_holder'] ?? ''));
     $docStatus = trim((string)($src['doc_status'] ?? ''));
@@ -120,7 +122,7 @@ if (($method === 'POST' && ($action === 'create' || $action === '')) ||
     // This keeps routing update-only (Option A) by ensuring notifications carry identifiers.
     if (($trackingId === null || $trackingId <= 0) && $fileUrl !== '') {
         // Try exact match by server file_path
-        if ($q = $conn->prepare("SELECT id, mobile_timestamp, end_location, current_holder, status FROM tracking WHERE file_path = ? ORDER BY id DESC LIMIT 1")) {
+        if ($q = $conn->prepare("SELECT id, mobile_timestamp, doc_hash, end_location, current_holder, status FROM tracking WHERE file_path = ? ORDER BY id DESC LIMIT 1")) {
             $q->bind_param('s', $fileUrl);
             if ($q->execute()) {
                 $res = $q->get_result();
@@ -138,6 +140,9 @@ if (($method === 'POST' && ($action === 'create' || $action === '')) ||
                     if ($docStatus === '') {
                         $docStatus = trim((string)($row['status'] ?? ''));
                     }
+                    if ($docHash === '') {
+                        $docHash = trim((string)($row['doc_hash'] ?? ''));
+                    }
                 }
             }
             $q->close();
@@ -145,7 +150,7 @@ if (($method === 'POST' && ($action === 'create' || $action === '')) ||
     }
     if (($trackingId === null || $trackingId <= 0) && $mobileTimestamp !== '') {
         // Infer by mobile_timestamp (works even if file_url is missing)
-        if ($q = $conn->prepare("SELECT id, mobile_timestamp, end_location, current_holder, status, file_path FROM tracking WHERE mobile_timestamp = ? ORDER BY id DESC LIMIT 1")) {
+        if ($q = $conn->prepare("SELECT id, mobile_timestamp, doc_hash, end_location, current_holder, status, file_path FROM tracking WHERE mobile_timestamp = ? ORDER BY id DESC LIMIT 1")) {
             $q->bind_param('s', $mobileTimestamp);
             if ($q->execute()) {
                 $res = $q->get_result();
@@ -163,6 +168,9 @@ if (($method === 'POST' && ($action === 'create' || $action === '')) ||
                     if ($fileUrl === '') {
                         $fileUrl = trim((string)($row['file_path'] ?? ''));
                     }
+                    if ($docHash === '') {
+                        $docHash = trim((string)($row['doc_hash'] ?? ''));
+                    }
                 }
             }
             $q->close();
@@ -173,9 +181,9 @@ if (($method === 'POST' && ($action === 'create' || $action === '')) ||
         respond(['success' => false, 'message' => 'recipient_username or recipient_department required'], 400);
     }
 
-    $stmt = $conn->prepare("INSERT INTO notifications (title, content, type, recipient_username, sender_username, department, recipient_department, file_url, tracking_id, mobile_timestamp, end_location, current_holder, doc_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-    // 13 params: 8 strings + 1 int + 4 strings
-    $stmt->bind_param('ssssssssissss', $title, $content, $type, $recipient, $sender, $department, $recipientDept, $fileUrl, $trackingId, $mobileTimestamp, $endLocation, $currentHolder, $docStatus);
+    $stmt = $conn->prepare("INSERT INTO notifications (title, content, type, recipient_username, sender_username, department, recipient_department, file_url, tracking_id, mobile_timestamp, doc_hash, end_location, current_holder, doc_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    // 14 params: 8 strings + 1 int + 5 strings
+    $stmt->bind_param('ssssssssisssss', $title, $content, $type, $recipient, $sender, $department, $recipientDept, $fileUrl, $trackingId, $mobileTimestamp, $docHash, $endLocation, $currentHolder, $docStatus);
     if ($stmt->execute()) {
         $newId = $stmt->insert_id;
 
@@ -192,6 +200,7 @@ if (($method === 'POST' && ($action === 'create' || $action === '')) ||
                 'file_url'            => $fileUrl,
                 'tracking_id'         => $trackingId,
                 'mobile_timestamp'    => $mobileTimestamp,
+                'doc_hash'            => $docHash,
                 'end_location'        => $endLocation,
                 'current_holder'      => $currentHolder,
                 'createdAt'           => (int)round(microtime(true) * 1000),
@@ -275,7 +284,7 @@ if ($method === 'GET' && ($action === 'list' || $action === '')) {
     }
 
     $where = count($conds) ? ('WHERE ' . implode(' AND ', $conds)) : '';
-    $sql = "SELECT id, title, content, type, recipient_username, recipient_department, sender_username, department, status, file_url, tracking_id, mobile_timestamp, end_location, current_holder, doc_status, UNIX_TIMESTAMP(created_at)*1000 as created_at FROM notifications $where ORDER BY id DESC LIMIT ?";
+    $sql = "SELECT id, title, content, type, recipient_username, recipient_department, sender_username, department, status, file_url, tracking_id, mobile_timestamp, doc_hash, end_location, current_holder, doc_status, UNIX_TIMESTAMP(created_at)*1000 as created_at FROM notifications $where ORDER BY id DESC LIMIT ?";
     $stmt = $conn->prepare($sql);
 
     if ($types === '') {
@@ -294,12 +303,12 @@ if ($method === 'GET' && ($action === 'list' || $action === '')) {
 
     // Prepared statement for inferring identifiers from tracking by file_url/mobile_timestamp (best-effort)
     $inferStmt = null;
-    if ($inferStmtTry = $conn->prepare("SELECT id, mobile_timestamp, end_location, current_holder, status FROM tracking WHERE file_path = ? ORDER BY id DESC LIMIT 1")) {
+    if ($inferStmtTry = $conn->prepare("SELECT id, mobile_timestamp, doc_hash, end_location, current_holder, status FROM tracking WHERE file_path = ? ORDER BY id DESC LIMIT 1")) {
         $inferStmt = $inferStmtTry;
     }
 
     $inferByMobileStmt = null;
-    if ($inferByMobileTry = $conn->prepare("SELECT id, mobile_timestamp, end_location, current_holder, status, file_path FROM tracking WHERE mobile_timestamp = ? ORDER BY id DESC LIMIT 1")) {
+    if ($inferByMobileTry = $conn->prepare("SELECT id, mobile_timestamp, doc_hash, end_location, current_holder, status, file_path FROM tracking WHERE mobile_timestamp = ? ORDER BY id DESC LIMIT 1")) {
         $inferByMobileStmt = $inferByMobileTry;
     }
 
@@ -323,7 +332,7 @@ if ($method === 'GET' && ($action === 'list' || $action === '')) {
         $trackingTypeCol = null;
     }
 
-    $byIdSelect = "SELECT id, mobile_timestamp, end_location, current_holder, status";
+    $byIdSelect = "SELECT id, mobile_timestamp, doc_hash, end_location, current_holder, status";
     if ($trackingTypeCol !== null) {
         $byIdSelect .= ", {$trackingTypeCol} AS document_type";
     }
@@ -349,6 +358,9 @@ if ($method === 'GET' && ($action === 'list' || $action === '')) {
                     if ($mts === '') {
                         $row['mobile_timestamp'] = trim((string)($tr['mobile_timestamp'] ?? ''));
                         $mts = trim((string)($row['mobile_timestamp'] ?? ''));
+                    }
+                    if (empty($row['doc_hash'])) {
+                        $row['doc_hash'] = trim((string)($tr['doc_hash'] ?? ''));
                     }
                     if (empty($row['end_location'])) {
                         $row['end_location'] = trim((string)($tr['end_location'] ?? ''));
@@ -383,6 +395,9 @@ if ($method === 'GET' && ($action === 'list' || $action === '')) {
                     if (empty($row['file_url'])) {
                         $row['file_url'] = trim((string)($tr['file_path'] ?? ''));
                     }
+                    if (empty($row['doc_hash'])) {
+                        $row['doc_hash'] = trim((string)($tr['doc_hash'] ?? ''));
+                    }
                 }
             }
         }
@@ -396,6 +411,7 @@ if ($method === 'GET' && ($action === 'list' || $action === '')) {
                     $row['current_holder'] = trim((string)($tr2['current_holder'] ?? ($row['current_holder'] ?? '')));
                     $row['end_location'] = trim((string)($tr2['end_location'] ?? ($row['end_location'] ?? '')));
                     $row['mobile_timestamp'] = trim((string)($tr2['mobile_timestamp'] ?? ($row['mobile_timestamp'] ?? '')));
+                    $row['doc_hash'] = trim((string)($tr2['doc_hash'] ?? ($row['doc_hash'] ?? '')));
                     $row['doc_status'] = trim((string)($tr2['status'] ?? ($row['doc_status'] ?? '')));
                     if (isset($tr2['document_type'])) {
                         $row['document_type'] = trim((string)$tr2['document_type']);
@@ -410,6 +426,9 @@ if ($method === 'GET' && ($action === 'list' || $action === '')) {
         }
         if (!isset($row['mobileTimestamp']) && $mts !== '') {
             $row['mobileTimestamp'] = $mts;
+        }
+        if (!isset($row['docHash']) && !empty($row['doc_hash'])) {
+            $row['docHash'] = trim((string)$row['doc_hash']);
         }
         // Add camelCase aliases for end_location and current_holder
         if (!empty($row['end_location'])) {
