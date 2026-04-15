@@ -35,6 +35,28 @@ function __tracking_document_history_has_doc_type(mysqli $connection): bool {
     return $has;
 }
 
+function __tracking_normalize_department(string $dept): string {
+  $u = strtoupper(trim($dept));
+  if ($u === 'ACCOUNT' || $u === 'ACCOUNTS') {
+    return 'ACCOUNTING';
+  }
+  return $u;
+}
+
+function __tracking_department_aliases(string $dept): array {
+  $u = strtoupper(trim($dept));
+  if ($u === '') {
+    return [];
+  }
+  if ($u === 'ACCOUNTING') {
+    return ['ACCOUNTING', 'ACCOUNT'];
+  }
+  if ($u === 'ACCOUNT' || $u === 'ACCOUNTS') {
+    return ['ACCOUNT', 'ACCOUNTING'];
+  }
+  return [$u];
+}
+
 function __tracking_ensure_department_archives_table(mysqli $connection): bool {
   static $ok = null;
   if ($ok !== null) return $ok;
@@ -288,364 +310,6 @@ function __tracking_load_departments(mysqli $connection): array {
     }
     return $out;
 }
-
-  function __tracking_is_dummy_marker_row(array $row): bool {
-    $employee = (string)($row['employee_name'] ?? '');
-    $docHash = (string)($row['doc_hash'] ?? '');
-    $mobileTs = (string)($row['mobile_timestamp'] ?? '');
-    $filePath = (string)($row['file_path'] ?? '');
-    return (
-      stripos($employee, '[TEST-DUMMY]') === 0 ||
-      stripos($docHash, 'dummytest-') === 0 ||
-      stripos($mobileTs, 'dummyts-') === 0 ||
-      stripos($filePath, 'uploads/dummy/') === 0
-    );
-  }
-
-  function __tracking_insert_history_event(mysqli $connection, int $docId, string $docType, string $action, int $actorId, ?string $fromStatus, ?string $toStatus, ?string $fromHolder, ?string $toHolder, string $notes): void {
-    $hasDocType = __tracking_document_history_has_doc_type($connection);
-    $sql = $hasDocType
-      ? "INSERT INTO document_history (doc_id, doc_type, action, actor_user_id, from_status, to_status, from_holder, to_holder, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      : "INSERT INTO document_history (doc_id, action, actor_user_id, from_status, to_status, from_holder, to_holder, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
-    $stmt = $connection->prepare($sql);
-    if (!$stmt) {
-      return;
-    }
-    if ($hasDocType) {
-      $stmt->bind_param('ississsss', $docId, $docType, $action, $actorId, $fromStatus, $toStatus, $fromHolder, $toHolder, $notes);
-    } else {
-      $stmt->bind_param('isisssss', $docId, $action, $actorId, $fromStatus, $toStatus, $fromHolder, $toHolder, $notes);
-    }
-    @$stmt->execute();
-    $stmt->close();
-  }
-
-  // Admin test harness: seed realistic dummy documents for archive/tracking tests.
-  if (isset($_GET['action']) && $_GET['action'] === 'seed_dummy_tracking_data') {
-    Security::require_role(['admin']);
-    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
-      tracking_send_json($connection, ['success' => false, 'error' => 'POST required']);
-    }
-
-    $actorId = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0;
-    $depts = __tracking_load_departments($connection);
-    $seedDepts = array_values(array_slice($depts, 0, min(4, count($depts))));
-    if (count($seedDepts) < 3) {
-      $seedDepts = ['HR', 'CBO', 'ACCOUNTING'];
-    }
-
-    $nowTs = time();
-    $batchToken = 'DUMMYTRACK-' . date('YmdHis', $nowTs);
-    $rows = [
-      [
-        'type' => 'Payroll',
-        'employee_name' => '[TEST-DUMMY] Payroll Register ' . date('Y-m-d'),
-        'department' => $seedDepts[0],
-        'current_holder' => $seedDepts[0],
-        'end_location' => $seedDepts[2] ?? $seedDepts[0],
-        'status' => 'Pending',
-        'file_type_icon' => 'pdf',
-        'file_size' => '1.2 MB',
-        'ocr_content' => "PAYROLL SUMMARY\nEmployee: Juan Dela Cruz\nPeriod: March 16-31, 2026\nGross Pay: 24,850.00\nDeductions: 2,510.00\nNet Pay: 22,340.00\nApproved by HR Manager",
-        'routing_queue' => implode(',', [$seedDepts[0], $seedDepts[1] ?? $seedDepts[0], $seedDepts[2] ?? $seedDepts[0]]),
-        'route_step' => 0,
-      ],
-      [
-        'type' => 'Memo',
-        'employee_name' => '[TEST-DUMMY] Memorandum Re Procurement',
-        'department' => $seedDepts[1] ?? $seedDepts[0],
-        'current_holder' => $seedDepts[2] ?? $seedDepts[0],
-        'end_location' => $seedDepts[3] ?? $seedDepts[0],
-        'status' => 'In Review',
-        'file_type_icon' => 'docx',
-        'file_size' => '860 KB',
-        'ocr_content' => "MEMORANDUM\nSubject: Office Supplies Replenishment\nFrom: Admin Office\nTo: Budget Office\nRequested Amount: 75,000.00\nPlease review and endorse for approval.",
-        'routing_queue' => implode(',', [$seedDepts[1] ?? $seedDepts[0], $seedDepts[2] ?? $seedDepts[0], $seedDepts[3] ?? $seedDepts[0]]),
-        'route_step' => 1,
-      ],
-      [
-        'type' => 'Travel Order',
-        'employee_name' => '[TEST-DUMMY] Travel Order NCR Cluster Meeting',
-        'department' => $seedDepts[2] ?? $seedDepts[0],
-        'current_holder' => $seedDepts[2] ?? $seedDepts[0],
-        'end_location' => $seedDepts[0],
-        'status' => 'Completed',
-        'file_type_icon' => 'pdf',
-        'file_size' => '1.9 MB',
-        'ocr_content' => "TRAVEL ORDER\nName: Maria Santos\nDestination: Quezon City\nPurpose: Inter-office Planning Workshop\nDate: April 10, 2026\nStatus: Completed",
-        'routing_queue' => implode(',', [$seedDepts[2] ?? $seedDepts[0], $seedDepts[0]]),
-        'route_step' => 1,
-      ],
-      [
-        'type' => 'Announcement',
-        'employee_name' => '[TEST-DUMMY] Announcement: Midyear Records Audit',
-        'department' => $seedDepts[0],
-        'current_holder' => 'Digital Archive',
-        'end_location' => 'Digital Archive',
-        'status' => 'Archived',
-        'file_type_icon' => 'pdf',
-        'file_size' => '540 KB',
-        'ocr_content' => "ANNOUNCEMENT\nSubject: Midyear Records Audit\nAll departments are requested to submit compliance reports by April 20, 2026.\nCoordinator: Records Management Unit",
-        'routing_queue' => implode(',', [$seedDepts[0], $seedDepts[1] ?? $seedDepts[0], $seedDepts[2] ?? $seedDepts[0]]),
-        'route_step' => 2,
-      ],
-    ];
-
-    $inserted = [];
-    foreach ($rows as $idx => $row) {
-      $docHash = 'dummytest-' . hash('sha256', $batchToken . '|' . $idx . '|' . $row['type']);
-      $mobileTs = 'dummyts-' . ($nowTs - ($idx * 47));
-      $submittedAt = date('Y-m-d H:i:s', $nowTs - (($idx + 1) * 3600));
-      $filePath = 'uploads/dummy/' . strtolower(preg_replace('/[^a-z0-9]+/i', '_', $row['type'])) . '_' . ($idx + 1) . '.pdf';
-      $ocrSummary = substr(trim((string)$row['ocr_content']), 0, 180);
-
-      $sql = "INSERT INTO tracking (type, employee_name, date_submitted, current_holder, end_location, status, department, file_type_icon, doc_hash, file_path, file_size, mobile_timestamp, ocr_content, ocr_summary, created_at, routing_queue, route_step) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-      $stmt = $connection->prepare($sql);
-      if (!$stmt) {
-        continue;
-      }
-      $stmt->bind_param(
-        'ssssssssssssssssi',
-        $row['type'],
-        $row['employee_name'],
-        $submittedAt,
-        $row['current_holder'],
-        $row['end_location'],
-        $row['status'],
-        $row['department'],
-        $row['file_type_icon'],
-        $docHash,
-        $filePath,
-        $row['file_size'],
-        $mobileTs,
-        $row['ocr_content'],
-        $ocrSummary,
-        $submittedAt,
-        $row['routing_queue'],
-        $row['route_step']
-      );
-      if (!$stmt->execute()) {
-        $stmt->close();
-        continue;
-      }
-      $trackingId = (int)$connection->insert_id;
-      $stmt->close();
-
-      __tracking_insert_history_event($connection, $trackingId, (string)$row['type'], 'create', $actorId, null, 'Pending', null, (string)$row['department'], 'Seeded dummy create event');
-      __tracking_insert_history_event($connection, $trackingId, (string)$row['type'], 'route', $actorId, 'Pending', (string)$row['status'], (string)$row['department'], (string)$row['current_holder'], 'Seeded routing event');
-      if (strcasecmp((string)$row['status'], 'Pending') !== 0) {
-        __tracking_insert_history_event($connection, $trackingId, (string)$row['type'], 'receive', $actorId, 'Pending', (string)$row['status'], (string)$row['department'], (string)$row['current_holder'], 'Seeded receive event');
-      }
-      if (strcasecmp((string)$row['status'], 'Completed') === 0) {
-        __tracking_insert_history_event($connection, $trackingId, (string)$row['type'], 'complete', $actorId, 'In Review', 'Completed', (string)$row['current_holder'], (string)$row['end_location'], 'Seeded completion event');
-      }
-      if (strcasecmp((string)$row['status'], 'Archived') === 0) {
-        __tracking_insert_history_event($connection, $trackingId, (string)$row['type'], 'archive', $actorId, 'Completed', 'Archived', (string)$row['current_holder'], 'Digital Archive', 'Seeded archive event');
-
-        $hasSourceTrackingId = __tracking_archive_has_source_tracking_id($connection);
-        $archiveSql = $hasSourceTrackingId
-          ? "INSERT INTO archive (document_name, department, type, status, date_archived, size, file_type_icon, file_path, ocr_content, source_tracking_id) VALUES (?, ?, ?, 'Archived', ?, ?, ?, ?, ?, ?)"
-          : "INSERT INTO archive (document_name, department, type, status, date_archived, size, file_type_icon, file_path, ocr_content) VALUES (?, ?, ?, 'Archived', ?, ?, ?, ?, ?)";
-        if ($a = $connection->prepare($archiveSql)) {
-          $archivedAt = date('Y-m-d H:i:s');
-          if ($hasSourceTrackingId) {
-            $a->bind_param('ssssssssi', $row['employee_name'], $row['department'], $row['type'], $archivedAt, $row['file_size'], $row['file_type_icon'], $filePath, $row['ocr_content'], $trackingId);
-          } else {
-            $a->bind_param('ssssssss', $row['employee_name'], $row['department'], $row['type'], $archivedAt, $row['file_size'], $row['file_type_icon'], $filePath, $row['ocr_content']);
-          }
-          @$a->execute();
-          $a->close();
-        }
-      }
-
-      $inserted[] = [
-        'id' => $trackingId,
-        'type' => $row['type'],
-        'status' => $row['status'],
-        'department' => $row['department'],
-        'doc_hash' => $docHash,
-      ];
-    }
-
-    tracking_send_json($connection, [
-      'success' => true,
-      'batch_token' => $batchToken,
-      'inserted_count' => count($inserted),
-      'inserted' => $inserted,
-      'message' => 'Dummy tracking data seeded successfully.'
-    ]);
-  }
-
-  // Admin test harness: delete only dummy rows created for testing.
-  if (isset($_GET['action']) && $_GET['action'] === 'clear_dummy_tracking_data') {
-    Security::require_role(['admin']);
-    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
-      tracking_send_json($connection, ['success' => false, 'error' => 'POST required']);
-    }
-
-    $dummyIds = [];
-    if ($q = $connection->query("SELECT id FROM tracking WHERE employee_name LIKE '[TEST-DUMMY]%' OR doc_hash LIKE 'dummytest-%' OR mobile_timestamp LIKE 'dummyts-%' OR file_path LIKE 'uploads/dummy/%'")) {
-      while ($q && ($r = $q->fetch_assoc())) {
-        $dummyIds[] = (int)($r['id'] ?? 0);
-      }
-      $q->free();
-    }
-
-    $deletedHistory = 0;
-    $deletedTracking = 0;
-    $deletedDeptArchives = 0;
-    $deletedArchive = 0;
-    $deletedArchiveHistory = 0;
-
-    if (!empty($dummyIds)) {
-      $placeholders = implode(',', array_fill(0, count($dummyIds), '?'));
-      $types = str_repeat('i', count($dummyIds));
-
-      if ($h = $connection->prepare("DELETE FROM document_history WHERE doc_id IN ($placeholders)")) {
-        tracking_bind_params($h, $types, $dummyIds);
-        $h->execute();
-        $deletedHistory = max(0, (int)$h->affected_rows);
-        $h->close();
-      }
-
-      if ($__hasDeptArchives) {
-        if ($da = $connection->prepare("DELETE FROM department_archives WHERE tracking_id IN ($placeholders)")) {
-          tracking_bind_params($da, $types, $dummyIds);
-          $da->execute();
-          $deletedDeptArchives = max(0, (int)$da->affected_rows);
-          $da->close();
-        }
-      }
-
-      if ($t = $connection->prepare("DELETE FROM tracking WHERE id IN ($placeholders)")) {
-        tracking_bind_params($t, $types, $dummyIds);
-        $t->execute();
-        $deletedTracking = max(0, (int)$t->affected_rows);
-        $t->close();
-      }
-    }
-
-    $archiveIds = [];
-    if ($qa = $connection->query("SELECT id FROM archive WHERE document_name LIKE '[TEST-DUMMY]%' OR file_path LIKE 'uploads/dummy/%'")) {
-      while ($qa && ($r = $qa->fetch_assoc())) {
-        $archiveIds[] = (int)($r['id'] ?? 0);
-      }
-      $qa->free();
-    }
-    if (!empty($archiveIds)) {
-      $aph = implode(',', array_fill(0, count($archiveIds), '?'));
-      $atypes = str_repeat('i', count($archiveIds));
-      if ($ah = $connection->prepare("DELETE FROM archive_history WHERE archive_id IN ($aph)")) {
-        tracking_bind_params($ah, $atypes, $archiveIds);
-        $ah->execute();
-        $deletedArchiveHistory = max(0, (int)$ah->affected_rows);
-        $ah->close();
-      }
-      if ($ad = $connection->prepare("DELETE FROM archive WHERE id IN ($aph)")) {
-        tracking_bind_params($ad, $atypes, $archiveIds);
-        $ad->execute();
-        $deletedArchive = max(0, (int)$ad->affected_rows);
-        $ad->close();
-      }
-    }
-
-    tracking_send_json($connection, [
-      'success' => true,
-      'deleted' => [
-        'tracking' => $deletedTracking,
-        'document_history' => $deletedHistory,
-        'department_archives' => $deletedDeptArchives,
-        'archive' => $deletedArchive,
-        'archive_history' => $deletedArchiveHistory,
-      ],
-      'message' => 'Dummy tracking/archive test data deleted.'
-    ]);
-  }
-
-  // Admin test harness: detect archive consistency issues after archive actions.
-  if (isset($_GET['action']) && $_GET['action'] === 'debug_archive_consistency') {
-    Security::require_role(['admin']);
-
-    $report = [
-      'success' => true,
-      'generated_at' => date('c'),
-      'summary' => [
-        'dummy_tracking_total' => 0,
-        'dummy_tracking_archived' => 0,
-        'dummy_archive_total' => 0,
-        'archived_without_archive_copy' => 0,
-        'archive_without_tracking_source' => 0,
-      ],
-      'issues' => [
-        'archived_without_archive_copy' => [],
-        'archive_without_tracking_source' => [],
-      ],
-    ];
-
-    $trackingRows = [];
-    if ($tr = $connection->query("SELECT id, employee_name, type, status, department, current_holder, end_location, file_path, doc_hash, mobile_timestamp FROM tracking WHERE employee_name LIKE '[TEST-DUMMY]%' OR doc_hash LIKE 'dummytest-%' OR mobile_timestamp LIKE 'dummyts-%' OR file_path LIKE 'uploads/dummy/%'")) {
-      while ($tr && ($row = $tr->fetch_assoc())) {
-        $trackingRows[] = $row;
-      }
-      $tr->free();
-    }
-    $report['summary']['dummy_tracking_total'] = count($trackingRows);
-
-    $archiveByTrackingId = [];
-    $archiveRows = [];
-    $hasSourceTrackingId = __tracking_archive_has_source_tracking_id($connection);
-    $archiveSql = $hasSourceTrackingId
-      ? "SELECT id, source_tracking_id, document_name, type, status, date_archived, file_path FROM archive WHERE document_name LIKE '[TEST-DUMMY]%' OR file_path LIKE 'uploads/dummy/%' OR source_tracking_id IN (SELECT id FROM tracking WHERE employee_name LIKE '[TEST-DUMMY]%' OR doc_hash LIKE 'dummytest-%' OR mobile_timestamp LIKE 'dummyts-%' OR file_path LIKE 'uploads/dummy/%')"
-      : "SELECT id, NULL AS source_tracking_id, document_name, type, status, date_archived, file_path FROM archive WHERE document_name LIKE '[TEST-DUMMY]%' OR file_path LIKE 'uploads/dummy/%'";
-    if ($ar = $connection->query($archiveSql)) {
-      while ($ar && ($row = $ar->fetch_assoc())) {
-        $archiveRows[] = $row;
-        $srcId = (int)($row['source_tracking_id'] ?? 0);
-        if ($srcId > 0) {
-          $archiveByTrackingId[$srcId] = true;
-        }
-      }
-      $ar->free();
-    }
-    $report['summary']['dummy_archive_total'] = count($archiveRows);
-
-    foreach ($trackingRows as $row) {
-      $id = (int)($row['id'] ?? 0);
-      $statusNorm = strtoupper(trim((string)($row['status'] ?? '')));
-      if ($statusNorm === 'ARCHIVED') {
-        $report['summary']['dummy_tracking_archived']++;
-        if ($hasSourceTrackingId && empty($archiveByTrackingId[$id])) {
-          $report['issues']['archived_without_archive_copy'][] = [
-            'tracking_id' => $id,
-            'type' => $row['type'] ?? '',
-            'employee_name' => $row['employee_name'] ?? '',
-            'status' => $row['status'] ?? '',
-          ];
-        }
-      }
-    }
-
-    if ($hasSourceTrackingId) {
-      $trackingIdSet = [];
-      foreach ($trackingRows as $r) {
-        $trackingIdSet[(int)($r['id'] ?? 0)] = true;
-      }
-      foreach ($archiveRows as $row) {
-        $src = (int)($row['source_tracking_id'] ?? 0);
-        if ($src > 0 && !isset($trackingIdSet[$src])) {
-          $report['issues']['archive_without_tracking_source'][] = [
-            'archive_id' => (int)($row['id'] ?? 0),
-            'source_tracking_id' => $src,
-            'document_name' => $row['document_name'] ?? '',
-          ];
-        }
-      }
-    }
-
-    $report['summary']['archived_without_archive_copy'] = count($report['issues']['archived_without_archive_copy']);
-    $report['summary']['archive_without_tracking_source'] = count($report['issues']['archive_without_tracking_source']);
-    tracking_send_json($connection, $report);
-  }
 
 if (isset($_GET['action']) && $_GET['action'] === 'save_ocr_correction') {
   if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
@@ -1454,10 +1118,18 @@ if (isset($_GET['action']) && $_GET['action'] === 'sidebar_stats') {
     $__ssDeptTypes = '';
     $__ssDeptParams = [];
     if (!$__isAdmin && !empty($_SESSION['user_department'])) {
-        $__ssud = strtoupper(trim($_SESSION['user_department']));
-        $__ssDeptWhere = ' WHERE (UPPER(TRIM(department)) = ? OR UPPER(TRIM(current_holder)) = ? OR UPPER(TRIM(end_location)) = ? OR (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \', \'\'))) > 0 AND CAST(COALESCE(route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \', \'\'))) - 1)))';
+      $__ssAliases = __tracking_department_aliases((string)$_SESSION['user_department']);
+      $__ssud = $__ssAliases[0] ?? '';
+      $__ssAlt = $__ssAliases[1] ?? '';
+      if ($__ssud !== '' && $__ssAlt !== '') {
+        $__ssDeptWhere = ' WHERE (UPPER(TRIM(department)) IN (?, ?) OR UPPER(TRIM(current_holder)) IN (?, ?) OR UPPER(TRIM(end_location)) IN (?, ?) OR ((FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) > 0 AND CAST(COALESCE(route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) - 1)) OR (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) > 0 AND CAST(COALESCE(route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) - 1))))';
+        $__ssDeptTypes = 'ssssssssss';
+        $__ssDeptParams = [$__ssud, $__ssAlt, $__ssud, $__ssAlt, $__ssud, $__ssAlt, $__ssud, $__ssud, $__ssAlt, $__ssAlt];
+      } elseif ($__ssud !== '') {
+        $__ssDeptWhere = ' WHERE (UPPER(TRIM(department)) = ? OR UPPER(TRIM(current_holder)) = ? OR UPPER(TRIM(end_location)) = ? OR (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) > 0 AND CAST(COALESCE(route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) - 1)))';
         $__ssDeptTypes = 'sssss';
         $__ssDeptParams = [$__ssud, $__ssud, $__ssud, $__ssud, $__ssud];
+      }
     }
 
     $pendingCount = 0;
@@ -1811,10 +1483,18 @@ if (isset($_GET['action']) && $_GET['action'] === 'tracking_latest') {
     $__latestDeptTypes = '';
     $__latestDeptParams = [];
     if (!$__isAdmin && !empty($_SESSION['user_department'])) {
-        $__lud = strtoupper(trim($_SESSION['user_department']));
-        $__latestDeptWhere = ' AND (UPPER(TRIM(department)) = ? OR UPPER(TRIM(current_holder)) = ? OR UPPER(TRIM(end_location)) = ? OR (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \', \'\'))) > 0 AND CAST(COALESCE(route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \', \'\'))) - 1)))';
+      $__lAliases = __tracking_department_aliases((string)$_SESSION['user_department']);
+      $__lud = $__lAliases[0] ?? '';
+      $__ludAlt = $__lAliases[1] ?? '';
+      if ($__lud !== '' && $__ludAlt !== '') {
+        $__latestDeptWhere = ' AND (UPPER(TRIM(department)) IN (?, ?) OR UPPER(TRIM(current_holder)) IN (?, ?) OR UPPER(TRIM(end_location)) IN (?, ?) OR ((FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) > 0 AND CAST(COALESCE(route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) - 1)) OR (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) > 0 AND CAST(COALESCE(route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) - 1))))';
+        $__latestDeptTypes = 'ssssssssss';
+        $__latestDeptParams = [$__lud, $__ludAlt, $__lud, $__ludAlt, $__lud, $__ludAlt, $__lud, $__lud, $__ludAlt, $__ludAlt];
+      } elseif ($__lud !== '') {
+        $__latestDeptWhere = ' AND (UPPER(TRIM(department)) = ? OR UPPER(TRIM(current_holder)) = ? OR UPPER(TRIM(end_location)) = ? OR (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) > 0 AND CAST(COALESCE(route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) - 1)))';
         $__latestDeptTypes = 'sssss';
         $__latestDeptParams = [$__lud, $__lud, $__lud, $__lud, $__lud];
+      }
     }
 
     $docs = [];
@@ -1892,8 +1572,6 @@ if (isset($_GET['action']) && $_GET['action'] === 'tracking_latest') {
 if (isset($_GET['action']) && ($_GET['action'] === 'mark_received' || $_GET['action'] === 'mark_in_review')) {
     // Set to true to enable verbose error_log output for debugging
     $debug_logging = false;
-    $debug_receive = ((isset($_GET['debug']) && (string)$_GET['debug'] === '1')
-      || (isset($_POST['debug']) && (string)$_POST['debug'] === '1'));
     
     $id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
     $notification_id = isset($_GET['notification_id']) ? (int)$_GET['notification_id'] : 0;
@@ -2094,22 +1772,6 @@ if (isset($_GET['action']) && ($_GET['action'] === 'mark_received' || $_GET['act
     if ($id <= 0) {
         if ($debug_logging) error_log("[mark_in_review] FAIL: id=$id not found. GET params: " . json_encode($_GET));
         $out = ['success' => false, 'error' => 'Invalid id or type/end_location not found'];
-        if ($debug_receive) {
-          $out['debug'] = [
-            'request' => [
-              'id' => $id_param_raw,
-              'notification_id' => $notification_id,
-              'type' => $type,
-              'end_location' => $end_location,
-              'receiver_department' => $receiver_department,
-            ],
-            'resolution' => [
-              'source' => ($id_param_raw > 0) ? 'id_param' : 'lookup_failed',
-              'resolved_id' => $id,
-            ],
-            'timestamp' => round(microtime(true) * 1000),
-          ];
-        }
         tracking_send_json($connection, $out);
         exit;
     }
@@ -2314,34 +1976,6 @@ if (isset($_GET['action']) && ($_GET['action'] === 'mark_received' || $_GET['act
                 'current_holder' => $current_holder,
                 'verified_status' => $verify_status,
             ];
-            if ($debug_receive) {
-              $out['debug'] = [
-                'request' => [
-                  'id' => $id_param_raw,
-                  'notification_id' => $notification_id,
-                  'type' => $type,
-                  'end_location' => $end_location,
-                  'receiver_department' => $receiver_department,
-                ],
-                'resolution' => [
-                  'source' => $resolved_id_source,
-                  'resolved_id' => $id,
-                ],
-                'before' => [
-                  'status' => $prev_status,
-                  'current_holder' => $prev_holder,
-                  'type' => $doc_type_row,
-                  'end_location' => $prev_end_location,
-                ],
-                'after' => [
-                  'status' => $target_status,
-                  'current_holder' => $current_holder,
-                  'verified_status' => $verify_status,
-                  'verified_holder' => $verify_holder,
-                ],
-                'timestamp' => round(microtime(true) * 1000),
-              ];
-            }
             tracking_send_json($connection, $out);
             exit;
         }
@@ -2349,25 +1983,6 @@ if (isset($_GET['action']) && ($_GET['action'] === 'mark_received' || $_GET['act
     }
     if ($debug_logging) error_log("[mark_in_review] UPDATE FAILED for id=$id");
     $out = ['success' => false, 'error' => 'Update failed'];
-    if ($debug_receive) {
-      $out['debug'] = [
-        'request' => [
-          'id' => $id_param_raw,
-          'notification_id' => $notification_id,
-          'receiver_department' => $receiver_department,
-        ],
-        'resolution' => [
-          'source' => ($id_param_raw > 0) ? 'id_param' : 'lookup',
-          'resolved_id' => $id,
-        ],
-        'before' => [
-          'status' => $prev_status,
-          'current_holder' => $prev_holder,
-          'type' => $doc_type_row,
-        ],
-        'timestamp' => round(microtime(true) * 1000),
-      ];
-    }
     tracking_send_json($connection, $out);
     exit;
 }
@@ -5114,14 +4729,31 @@ if ($dept !== '' && $dept !== 'All Departments') {
 //      their position (route_step >= FIND_IN_SET - 1).  routing_queue is populated
 //      on every routing action, so once a dept routes a doc it stays visible.
 if (!$__isAdmin && !empty($_SESSION['user_department'])) {
-  $ud = strtoupper(trim($_SESSION['user_department']));
-  $clauses[] = '(UPPER(TRIM(tracking.department)) = ? OR UPPER(TRIM(tracking.current_holder)) = ? OR UPPER(TRIM(tracking.end_location)) = ? OR (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(tracking.routing_queue, \' \', \'\'))) > 0 AND CAST(COALESCE(tracking.route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(tracking.routing_queue, \' \', \'\'))) - 1)))';
-  $bindTypes .= 'sssss';
-  $bindParams[] = $ud;
-  $bindParams[] = $ud;
-  $bindParams[] = $ud;
-  $bindParams[] = $ud;
-  $bindParams[] = $ud;
+  $udAliases = __tracking_department_aliases((string)$_SESSION['user_department']);
+  $ud = $udAliases[0] ?? '';
+  $udAlt = $udAliases[1] ?? '';
+  if ($ud !== '' && $udAlt !== '') {
+    $clauses[] = '(UPPER(TRIM(tracking.department)) IN (?, ?) OR UPPER(TRIM(tracking.current_holder)) IN (?, ?) OR UPPER(TRIM(tracking.end_location)) IN (?, ?) OR ((FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(tracking.routing_queue, \' \', \'\'))) > 0 AND CAST(COALESCE(tracking.route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(tracking.routing_queue, \' \', \'\'))) - 1)) OR (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(tracking.routing_queue, \' \', \'\'))) > 0 AND CAST(COALESCE(tracking.route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(tracking.routing_queue, \' \', \'\'))) - 1))))';
+    $bindTypes .= 'ssssssssss';
+    $bindParams[] = $ud;
+    $bindParams[] = $udAlt;
+    $bindParams[] = $ud;
+    $bindParams[] = $udAlt;
+    $bindParams[] = $ud;
+    $bindParams[] = $udAlt;
+    $bindParams[] = $ud;
+    $bindParams[] = $ud;
+    $bindParams[] = $udAlt;
+    $bindParams[] = $udAlt;
+  } elseif ($ud !== '') {
+    $clauses[] = '(UPPER(TRIM(tracking.department)) = ? OR UPPER(TRIM(tracking.current_holder)) = ? OR UPPER(TRIM(tracking.end_location)) = ? OR (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(tracking.routing_queue, \' \', \'\'))) > 0 AND CAST(COALESCE(tracking.route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(tracking.routing_queue, \' \', \'\'))) - 1)))';
+    $bindTypes .= 'sssss';
+    $bindParams[] = $ud;
+    $bindParams[] = $ud;
+    $bindParams[] = $ud;
+    $bindParams[] = $ud;
+    $bindParams[] = $ud;
+  }
 }
 
 // Per-department archive isolation: hide documents that this user/department has
@@ -7761,21 +7393,6 @@ $connection->close();
         </div>
       </div>
       <div id="filtersChips" class="filters-chips"></div>
-      <?php if ($__isAdmin): ?>
-      <div id="dummyHarnessPanel" style="margin: 8px 0 14px 0; border: 1px dashed #cbd5e1; border-radius: 10px; padding: 10px 12px; background: #f8fafc;">
-        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
-          <div style="font-size: 12px; color:#0f172a; font-weight:600;">
-            Admin Test Harness: Seed dummy documents, clear test data, and run archive consistency diagnostics.
-          </div>
-          <div style="display:flex; gap:8px; flex-wrap:wrap;">
-            <button class="action-button" id="seedDummyDataBtn" type="button" title="Insert realistic dummy tracking rows"><i class="fas fa-vial"></i> Seed Test Data</button>
-            <button class="action-button" id="debugArchiveConsistencyBtn" type="button" title="Detect archive/tracking mismatches"><i class="fas fa-bug"></i> Detect Archive Errors</button>
-            <button class="action-button" id="clearDummyDataBtn" type="button" title="Delete all seeded dummy rows"><i class="fas fa-trash"></i> Delete Dummy Data</button>
-          </div>
-        </div>
-        <div id="dummyHarnessOutput" style="display:none; margin-top:10px; background:#0f172a; color:#e2e8f0; border-radius:8px; padding:8px 10px; font-size:11px; max-height:180px; overflow:auto; white-space:pre-wrap;"></div>
-      </div>
-      <?php endif; ?>
       <div id="filtersBackdrop" class="filters-backdrop"></div>
       <div id="filtersPanel" class="filters-panel">
         <div class="filters-container">
@@ -8442,15 +8059,15 @@ $connection->close();
         // Department-scoped filtering: department_user only sees documents involving their department
         // route_step gating: dept must be in routing_queue AND step >= dept's 0-based position
         if (!window.__trackingIsAdmin && window.__trackingUserDept) {
-          const ud = window.__trackingUserDept.toUpperCase().trim();
-          const dept   = (data.department    || '').toUpperCase().trim();
-          const holder = (data.current_holder || '').toUpperCase().trim();
-          const endLoc = (data.end_location   || '').toUpperCase().trim();
+          const ud = normalizeDeptAlias(window.__trackingUserDept);
+          const dept = normalizeDeptAlias(data.department || '');
+          const holder = normalizeDeptAlias(data.current_holder || '');
+          const endLoc = normalizeDeptAlias(data.end_location || '');
           // Check if dept appears in routing_queue AND route_step has reached that position
           let inRoute = false;
           const queue = (data.routing_queue || '');
           if (queue) {
-            const qParts = queue.split(',').map(s => s.trim().toUpperCase());
+            const qParts = queue.split(',').map(s => normalizeDeptAlias(s));
             const pos = qParts.indexOf(ud); // 0-based
             const step = parseInt(data.route_step || '0', 10);
             inRoute = (pos >= 0 && step >= pos);
@@ -8584,7 +8201,13 @@ $connection->close();
 
     // Department scope for client-side Firestore listener filtering
     window.__trackingIsAdmin = <?php echo $__isAdmin ? 'true' : 'false'; ?>;
-    window.__trackingUserDept = <?php echo json_encode(!empty($_SESSION['user_department']) ? strtoupper(trim($_SESSION['user_department'])) : ''); ?>;
+    window.__trackingUserDept = <?php echo json_encode(!empty($_SESSION['user_department']) ? __tracking_normalize_department((string)$_SESSION['user_department']) : ''); ?>;
+
+    function normalizeDeptAlias(value) {
+      const u = (value || '').toString().toUpperCase().trim();
+      if (u === 'ACCOUNT' || u === 'ACCOUNTS') return 'ACCOUNTING';
+      return u;
+    }
 
     let currentSortColumn = null;
     let currentSortDirection = 'asc'; // 'asc' or 'desc'
@@ -9160,25 +8783,22 @@ $connection->close();
                 <button class="action-button timeline" title="View Timeline" onclick="viewDocumentTimeline('${doc.id}')">
                   <i class="fas fa-history"></i> Timeline
                 </button>
-                <button class="action-button" title="Debug" onclick="openDocDebug('${doc.id}')" style="background:#0f172a;color:#fff;">
-                  <i class="fas fa-bug"></i> Debug
-                </button>
                 <button class="action-button archive" title="Archive" onclick="archiveDocumentConfirm('${doc.id}', '${displayType}')"
                   ${(doc.status === 'Archived' || doc.status === 'Rejected') ? 'disabled' : ''}>
                   <i class="fas fa-archive"></i> Archive
                 </button>
                 ${(!window.__trackingIsAdmin && window.__trackingUserDept &&
-                   doc.current_holder && doc.current_holder.toUpperCase().trim() === window.__trackingUserDept.toUpperCase().trim() &&
+                   doc.current_holder && normalizeDeptAlias(doc.current_holder) === normalizeDeptAlias(window.__trackingUserDept) &&
                    doc.status === 'Pending')
                   ? `<button class="action-button" style="background:var(--success-color,#22c55e);color:#fff;" title="Mark as Received"
                        onclick="webReceiveDocument('${doc.id}')">
                        <i class="fas fa-check-circle"></i> Receive
                      </button>` : ''}
                 ${(!window.__trackingIsAdmin && window.__trackingUserDept &&
-                   doc.current_holder && doc.current_holder.toUpperCase().trim() === window.__trackingUserDept.toUpperCase().trim() &&
+                   doc.current_holder && normalizeDeptAlias(doc.current_holder) === normalizeDeptAlias(window.__trackingUserDept) &&
                    (doc.status === 'In Review' || doc.status === 'Received'))
                   ? `<button class="action-button" style="background:var(--brand-primary,#6868AC);color:#fff;" title="Route to Department"
-                       onclick="openRouteModal('${doc.id}', '${displayType}', '${doc.employee_name || ''}', '${doc.current_holder || ''}', '${doc.end_location || ''}', '${doc.mobile_timestamp || ''}', '${doc.doc_hash || ''}', '${doc.file_path || ''}', '${doc.routing_queue || ''}')">
+                       onclick="openRouteModal('${doc.id}', '${displayType}', '${doc.employee_name || ''}', '${doc.current_holder || ''}', '${doc.end_location || ''}', '${doc.mobile_timestamp || ''}', '${doc.doc_hash || ''}', '${doc.file_path || ''}', '${doc.routing_queue || ''}', '${doc.notification_id || doc.latest_notification_id || ''}')">
                        <i class="fas fa-share"></i> Route
                      </button>` : ''}
               </div>
@@ -9271,7 +8891,6 @@ $connection->close();
               <div style="display:flex;gap:8px;flex-shrink:0;">
                 <button class="action-button info" onclick="viewDocumentInfo('${d.id}')" title="Document Info"><i class="fas fa-info-circle"></i></button>
                 <button class="action-button timeline" onclick="viewDocumentTimeline('${d.id}')" title="Document Timeline"><i class="fas fa-history"></i></button>
-                <button class="action-button" onclick="openDocDebug('${d.id}')" title="Debug"><i class="fas fa-bug"></i></button>
                 <button class="action-button archive" onclick="archiveDocumentConfirm('${d.id}', '${d.type}')" ${(d.status === 'Archived' || d.status === 'Rejected') ? 'disabled' : ''} title="Archive Document"><i class="fas fa-archive"></i></button>
               </div>
             </div>`;
@@ -9336,7 +8955,6 @@ $connection->close();
             <div style="display:flex;gap:8px;justify-content:flex-end;padding-top:8px;border-top:1px solid var(--border);">
               <button class="action-button info" onclick="viewDocumentInfo('${d.id}')" title="Document Info"><i class="fas fa-info-circle"></i></button>
               <button class="action-button timeline" onclick="viewDocumentTimeline('${d.id}')" title="Document Timeline"><i class="fas fa-history"></i></button>
-              <button class="action-button" onclick="openDocDebug('${d.id}')" title="Debug"><i class="fas fa-bug"></i></button>
               <button class="action-button archive" onclick="archiveDocumentConfirm('${d.id}', '${d.type}')" ${(d.status === 'Archived' || d.status === 'Rejected') ? 'disabled' : ''} title="Archive Document"><i class="fas fa-archive"></i></button>
             </div>`;
           docGridView.appendChild(card);
@@ -10488,34 +10106,6 @@ $connection->close();
         const timelineCurrentHolder = document.getElementById('timelineCurrentHolder');
         const timelineHeader = timelineModal ? timelineModal.querySelector('.modal-header') : null;
 
-        if (timelineHeader && !document.getElementById('timelineDebugBtn')) {
-          const tools = document.createElement('div');
-          tools.style.cssText = 'margin-left:auto;display:flex;align-items:center;gap:8px;';
-          tools.innerHTML = `
-            <button id="timelineDebugCopyBtn" type="button" style="padding:6px 10px;border:1px solid #cbd5e1;background:#fff;border-radius:8px;cursor:pointer;font-size:12px;color:#334155;">
-              <i class="fas fa-copy"></i> Copy Debug
-            </button>
-            <button id="timelineDebugBtn" type="button" style="padding:6px 10px;border:none;background:#0f172a;color:#fff;border-radius:8px;cursor:pointer;font-size:12px;">
-              <i class="fas fa-bug"></i> Debug
-            </button>
-          `;
-          const closeBtn = timelineHeader.querySelector('.modal-close');
-          if (closeBtn) {
-            timelineHeader.insertBefore(tools, closeBtn);
-          } else {
-            timelineHeader.appendChild(tools);
-          }
-        }
-
-        const debugBtn = document.getElementById('timelineDebugBtn');
-        const debugCopyBtn = document.getElementById('timelineDebugCopyBtn');
-        if (debugBtn) {
-          debugBtn.onclick = () => openDocDebug(docId, doc);
-        }
-        if (debugCopyBtn) {
-          debugCopyBtn.onclick = () => copyDocDebug(docId, doc);
-        }
-
         // Set document name
         timelineDocumentName.textContent = doc.type;
         
@@ -10996,87 +10586,6 @@ $connection->close();
         setTimeout(() => {
             toast.remove();
         }, duration);
-    }
-
-    async function runDummyHarnessAction(actionName, successMessage) {
-      const outEl = document.getElementById('dummyHarnessOutput');
-      try {
-        const res = await fetch(`tracking.php?action=${encodeURIComponent(actionName)}`, {
-          method: 'POST',
-          credentials: 'include',
-          headers: { 'X-Requested-With': 'XMLHttpRequest' }
-        });
-        const data = await res.json();
-        if (!data || !data.success) {
-          throw new Error((data && (data.error || data.message)) || 'Request failed');
-        }
-        if (outEl) {
-          outEl.style.display = 'block';
-          outEl.textContent = JSON.stringify(data, null, 2);
-        }
-        showToast(successMessage, 'success');
-        if (actionName === 'seed_dummy_tracking_data' || actionName === 'clear_dummy_tracking_data') {
-          setTimeout(() => location.reload(), 700);
-        }
-      } catch (err) {
-        if (outEl) {
-          outEl.style.display = 'block';
-          outEl.textContent = String(err && err.message ? err.message : err);
-        }
-        showToast('Test harness error: ' + (err && err.message ? err.message : String(err)), 'error');
-      }
-    }
-
-    async function runDummyHarnessDebug() {
-      const outEl = document.getElementById('dummyHarnessOutput');
-      try {
-        const res = await fetch('tracking.php?action=debug_archive_consistency', {
-          method: 'GET',
-          cache: 'no-store',
-          credentials: 'include'
-        });
-        const data = await res.json();
-        if (!data || !data.success) {
-          throw new Error((data && (data.error || data.message)) || 'Debug check failed');
-        }
-        if (outEl) {
-          outEl.style.display = 'block';
-          outEl.textContent = JSON.stringify(data, null, 2);
-        }
-        const issueCount = ((data.summary && data.summary.archived_without_archive_copy) || 0) + ((data.summary && data.summary.archive_without_tracking_source) || 0);
-        showToast(issueCount > 0 ? `Archive checker found ${issueCount} issue(s).` : 'Archive checker found no dummy-data mismatches.', issueCount > 0 ? 'warning' : 'success');
-      } catch (err) {
-        if (outEl) {
-          outEl.style.display = 'block';
-          outEl.textContent = String(err && err.message ? err.message : err);
-        }
-        showToast('Archive checker failed: ' + (err && err.message ? err.message : String(err)), 'error');
-      }
-    }
-
-    const seedDummyDataBtn = document.getElementById('seedDummyDataBtn');
-    if (seedDummyDataBtn) {
-      seedDummyDataBtn.addEventListener('click', () => {
-        runDummyHarnessAction('seed_dummy_tracking_data', 'Dummy tracking data seeded.');
-      });
-    }
-
-    const debugArchiveConsistencyBtn = document.getElementById('debugArchiveConsistencyBtn');
-    if (debugArchiveConsistencyBtn) {
-      debugArchiveConsistencyBtn.addEventListener('click', () => {
-        runDummyHarnessDebug();
-      });
-    }
-
-    const clearDummyDataBtn = document.getElementById('clearDummyDataBtn');
-    if (clearDummyDataBtn) {
-      clearDummyDataBtn.addEventListener('click', () => {
-        openConfirmModal(
-          'Delete Dummy Data',
-          'Delete all seeded test rows from tracking/archive plus linked history? This only removes [TEST-DUMMY] rows.',
-          () => runDummyHarnessAction('clear_dummy_tracking_data', 'Dummy tracking data deleted.')
-        );
-      });
     }
 
     // --- Custom Confirmation Modal Functions ---
@@ -12277,216 +11786,28 @@ $connection->close();
       echo json_encode($deptList);
     ?>;
 
-    window.__trackingDebugLog = window.__trackingDebugLog || [];
-    window.__trackingLastRouteDebug = window.__trackingLastRouteDebug || null;
-    window.__trackingDebugByDocId = window.__trackingDebugByDocId || {};
     window.__trackingActionLocks = window.__trackingActionLocks || {};
-
-    function toPrettyJson(value) {
-      try {
-        return JSON.stringify(value, null, 2);
-      } catch (_) {
-        return String(value ?? '');
-      }
-    }
-
-    function buildDebugSummary(debugData) {
-      const d = debugData || {};
-      const req = d.request || {};
-      const diagnosis = (d.responseData && d.responseData.debug && d.responseData.debug.diagnosis) || {};
-      const expected = diagnosis.expected_next_department || 'n/a';
-      const actual = diagnosis.actual_next_department ||
-        ((d.postState && (d.postState.current_holder || d.postState.currentHolder)) || 'n/a');
-      const verdict = diagnosis.skip_detected ? 'SKIP DETECTED' : 'OK';
-      return [
-        `Action: ${(d.action || 'unknown').toUpperCase()}`,
-        `Doc ID: ${d.docId || 'n/a'}`,
-        `From: ${req.sender_department || req.receiver_department || 'n/a'}`,
-        `To: ${req.receiver_department || 'n/a'}`,
-        `Expected Next: ${expected}`,
-        `Actual Next: ${actual}`,
-        `Verdict: ${verdict}`,
-        `Timestamp: ${new Date(d.timestamp || Date.now()).toISOString()}`,
-      ].join('\n');
-    }
-
-    function debugCopyText(debugData) {
-      const summary = buildDebugSummary(debugData);
-      return `${summary}\n\nJSON:\n${toPrettyJson(debugData)}`;
-    }
-
-    async function copyDebugToClipboard(debugData) {
-      try {
-        await navigator.clipboard.writeText(debugCopyText(debugData));
-        showToast('Debug copied', 'success');
-      } catch (e) {
-        showToast('Copy failed: ' + (e && e.message ? e.message : e), 'error');
-      }
-    }
-
-    function ensureDebugFab() {
-      if (document.getElementById('routeDebugFab')) return;
-      const fab = document.createElement('button');
-      fab.id = 'routeDebugFab';
-      fab.type = 'button';
-      fab.title = 'Open latest route debugger';
-      fab.style.cssText = 'position:fixed;right:22px;bottom:22px;z-index:10030;background:#0f172a;color:#fff;border:none;border-radius:999px;padding:11px 14px;cursor:pointer;font-weight:700;font-size:12px;box-shadow:0 10px 24px rgba(0,0,0,0.25);display:none;';
-      fab.innerHTML = 'Debug';
-      fab.addEventListener('click', () => openRouteDebugModal(window.__trackingLastRouteDebug));
-      document.body.appendChild(fab);
-    }
-
-    function pushRouteDebug(debugData) {
-      const entry = Object.assign({ timestamp: Date.now() }, debugData || {});
-      window.__trackingLastRouteDebug = entry;
-      const docKey = (entry.docId ?? entry.tracking_id ?? '').toString().trim();
-      if (docKey) {
-        window.__trackingDebugByDocId[docKey] = entry;
-      }
-      window.__trackingDebugLog.unshift(entry);
-      if (window.__trackingDebugLog.length > 20) {
-        window.__trackingDebugLog = window.__trackingDebugLog.slice(0, 20);
-      }
-      ensureDebugFab();
-      const fab = document.getElementById('routeDebugFab');
-      if (fab) fab.style.display = 'inline-flex';
-      return entry;
-    }
-
-    function getDocDebugData(docId, docSnapshot) {
-      const key = (docId ?? '').toString().trim();
-      if (key && window.__trackingDebugByDocId[key]) {
-        return window.__trackingDebugByDocId[key];
-      }
-      if (window.__trackingLastRouteDebug) {
-        const lastKey = (window.__trackingLastRouteDebug.docId ?? '').toString().trim();
-        if (!key || key === lastKey) {
-          return window.__trackingLastRouteDebug;
-        }
-      }
-      if (!docSnapshot) return null;
-      return {
-        action: 'timeline_snapshot',
-        docId: key || (docSnapshot.id || ''),
-        request: {
-          sender_department: (docSnapshot.department || '').toString(),
-          receiver_department: (docSnapshot.current_holder || '').toString(),
-        },
-        postState: {
-          current_holder: docSnapshot.current_holder || '',
-          status: docSnapshot.status || '',
-          route_step: docSnapshot.route_step ?? null,
-          routing_queue: docSnapshot.routing_queue || '',
-        },
-        timeline: Array.isArray(docSnapshot.history) ? docSnapshot.history : [],
-        timestamp: Date.now(),
-      };
-    }
-
-    function openDocDebug(docId, docSnapshot) {
-      const debugData = getDocDebugData(docId, docSnapshot);
-      if (!debugData) {
-        showToast('No debug data captured yet for this document', 'error');
-        return;
-      }
-      openRouteDebugModal(debugData);
-    }
-
-    async function copyDocDebug(docId, docSnapshot) {
-      const debugData = getDocDebugData(docId, docSnapshot);
-      if (!debugData) {
-        showToast('No debug data captured yet for this document', 'error');
-        return;
-      }
-      await copyDebugToClipboard(debugData);
-    }
-
-    // Expose debug handlers globally because many buttons use inline onclick attributes.
-    window.openDocDebug = openDocDebug;
-    window.copyDocDebug = copyDocDebug;
-
-    function openRouteDebugModal(debugData) {
-      const data = debugData || window.__trackingLastRouteDebug;
-      if (!data) {
-        showToast('No debug data captured yet', 'error');
-        return;
-      }
-
-      const existing = document.getElementById('routeDebugModal');
-      if (existing) existing.remove();
-
-      const modal = document.createElement('div');
-      modal.id = 'routeDebugModal';
-      modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(2,6,23,0.65);z-index:10040;display:flex;align-items:center;justify-content:center;padding:18px;';
-      const summary = buildDebugSummary(data);
-      const jsonText = toPrettyJson(data);
-      modal.innerHTML = `
-        <div style="background:#fff;border-radius:14px;width:min(920px,96vw);max-height:90vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 60px rgba(0,0,0,0.28);">
-          <div style="padding:14px 18px;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;gap:8px;">
-            <strong style="font-size:16px;color:#0f172a;">Routing Debugger</strong>
-            <button id="routeDebugCopyBtn" style="margin-left:auto;background:#0f172a;color:#fff;border:none;border-radius:8px;padding:7px 12px;cursor:pointer;font-size:12px;">Copy</button>
-            <button id="routeDebugCloseBtn" style="background:#fff;color:#334155;border:1px solid #cbd5e1;border-radius:8px;padding:7px 12px;cursor:pointer;font-size:12px;">Close</button>
-          </div>
-          <div style="padding:14px 18px;background:#f8fafc;border-bottom:1px solid #e2e8f0;">
-            <pre style="margin:0;white-space:pre-wrap;word-break:break-word;font-size:12px;color:#0f172a;">${summary}</pre>
-          </div>
-          <div style="padding:14px 18px;overflow:auto;">
-            <pre style="margin:0;white-space:pre-wrap;word-break:break-word;font-size:12px;line-height:1.4;color:#0f172a;">${jsonText}</pre>
-          </div>
-        </div>`;
-      document.body.appendChild(modal);
-
-      const close = () => modal.remove();
-      modal.querySelector('#routeDebugCloseBtn')?.addEventListener('click', close);
-      modal.querySelector('#routeDebugCopyBtn')?.addEventListener('click', async () => {
-        await copyDebugToClipboard(data);
-      });
-      modal.addEventListener('click', (ev) => {
-        if (ev.target === modal) close();
-      });
-    }
-
-    // Expose modal opener globally for inline modal buttons.
-    window.openRouteDebugModal = openRouteDebugModal;
-
-    async function fetchDebugPostState(docId, mobileTs, docHash, filePath) {
-      try {
-        let verifyUrl = '';
-        if (docId) {
-          verifyUrl = window.location.pathname + '?action=doc_detail&id=' + encodeURIComponent(docId);
-        } else {
-          verifyUrl = window.location.pathname + '?action=resolve_identity'
-            + '&mobile_timestamp=' + encodeURIComponent(mobileTs || '')
-            + '&doc_hash=' + encodeURIComponent(docHash || '')
-            + '&file_path=' + encodeURIComponent(filePath || '');
-        }
-        const vr = await fetch(verifyUrl, { cache: 'no-store', credentials: 'include' });
-        const raw = await vr.text();
-        let parsed = null;
-        try { parsed = JSON.parse(raw); } catch (_) { parsed = { raw }; }
-        return { status: vr.status, data: parsed };
-      } catch (e) {
-        return { error: String(e) };
-      }
-    }
-
     async function webReceiveDocument(docId) {
-      if (!confirm('Mark this document as Received?')) return;
+      const proceed = await new Promise((resolve) => {
+        openConfirmModal(
+          'Confirm Document Receipt',
+          'Mark this document as Received? This will set its status to In Review under your department so you can proceed with routing.',
+          () => resolve(true)
+        );
+        const onCancel = () => resolve(false);
+        document.getElementById('cancelConfirmBtn')?.addEventListener('click', onCancel, { once: true });
+        document.getElementById('closeConfirmModalBtn')?.addEventListener('click', onCancel, { once: true });
+      });
+      if (!proceed) return;
+
       const lockKey = 'receive:' + String(docId || '');
       if (window.__trackingActionLocks[lockKey]) {
         showToast('Receive request is already in progress', 'error');
         return;
       }
       window.__trackingActionLocks[lockKey] = true;
-      const dept = window.__trackingUserDept || '';
-      const url = window.location.pathname + '?action=mark_received&id=' + encodeURIComponent(docId) + '&receiver_department=' + encodeURIComponent(dept) + '&debug=1';
-      const requestDebug = {
-        sender_department: dept,
-        receiver_department: dept,
-        tracking_id: String(docId || ''),
-        action: 'mark_received',
-        url,
-      };
+      const dept = normalizeDeptAlias(window.__trackingUserDept || '');
+      const url = window.location.pathname + '?action=mark_received&id=' + encodeURIComponent(docId) + '&receiver_department=' + encodeURIComponent(dept);
       try {
         const resp = await fetch(url, { cache: 'no-store', credentials: 'include' });
         const raw = await resp.text();
@@ -12496,17 +11817,6 @@ $connection->close();
         } catch (_) {
           data = { success: false, error: 'Invalid JSON response', raw };
         }
-
-        const postState = await fetchDebugPostState(docId, '', '', '');
-        pushRouteDebug({
-          action: 'receive',
-          docId,
-          request: requestDebug,
-          responseStatus: resp.status,
-          responseData: data,
-          responseRaw: raw,
-          postState: postState && postState.data ? postState.data : postState,
-        });
 
         if (data.success) {
           // Update row status badge
@@ -12523,35 +11833,46 @@ $connection->close();
           showToast('❌ ' + (data.error || 'Failed to receive'), 'error');
         }
       } catch (e) {
-        pushRouteDebug({
-          action: 'receive',
-          docId,
-          request: requestDebug,
-          error: String(e),
-        });
         showToast('❌ Network error: ' + e.message, 'error');
       } finally {
         delete window.__trackingActionLocks[lockKey];
       }
     }
 
-    function openRouteModal(docId, docType, empName, currentHolder, endLoc, mobileTs, docHash, filePath, routingQueue) {
+    function openRouteModal(docId, docType, empName, currentHolder, endLoc, mobileTs, docHash, filePath, routingQueue, notificationId) {
       // Remove existing modal if any
       const existing = document.getElementById('routeDocumentModal');
       if (existing) existing.remove();
 
-      const dept = (window.__trackingUserDept || '').toUpperCase().trim();
+      const dept = normalizeDeptAlias(window.__trackingUserDept || '');
       const isPayroll = docType.toLowerCase().indexOf('payroll') !== -1;
-      const availableDepts = ALL_DEPARTMENTS.filter(d => d.toUpperCase() !== dept);
+      const availableDepts = ALL_DEPARTMENTS.filter(d => normalizeDeptAlias(d) !== dept);
+      const holder = normalizeDeptAlias(currentHolder || '');
+      const payrollCurrent = holder || dept;
 
-      // Build dept options
-      const deptOptions = availableDepts.map(d => `<option value="${d}">${d}</option>`).join('');
+      let nextDeptChoices = availableDepts;
+      if (isPayroll) {
+        const idx = PAYROLL_FIXED_ROUTE.findIndex(d => normalizeDeptAlias(d) === payrollCurrent);
+        if (idx >= 0 && idx < PAYROLL_FIXED_ROUTE.length - 1) {
+          nextDeptChoices = [PAYROLL_FIXED_ROUTE[idx + 1]];
+        } else {
+          nextDeptChoices = [];
+        }
+      }
 
+      if (nextDeptChoices.length === 0) {
+        showToast('No valid next department available for this route.', 'error');
+        return;
+      }
+
+      const nextDeptOptions = nextDeptChoices
+        .map(d => `<option value="${d}">${d}</option>`)
+        .join('');
       // Payroll route visual
       let payrollHtml = '';
       if (isPayroll) {
         const steps = PAYROLL_FIXED_ROUTE.map((d, i) => {
-          const isCurrent = d.toUpperCase() === dept;
+          const isCurrent = normalizeDeptAlias(d) === dept;
           return `<span style="display:inline-flex;align-items:center;padding:4px 10px;border-radius:6px;font-size:12px;font-weight:600;
             background:${isCurrent ? '#6868AC' : '#ede9fe'};color:${isCurrent ? '#fff' : '#5b21b6'};">${d}</span>` +
             (i < PAYROLL_FIXED_ROUTE.length - 1 ? '<i class="fas fa-arrow-right" style="color:#a78bfa;margin:0 4px;font-size:10px;"></i>' : '');
@@ -12593,20 +11914,13 @@ $connection->close();
             <div style="margin-bottom:14px;">
               <label style="display:block;font-size:13px;font-weight:600;color:#475569;margin-bottom:6px;">Next Department</label>
               <select id="routeNextDept" style="width:100%;padding:10px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;outline:none;">
-                ${deptOptions}
-              </select>
-            </div>
-            <div style="margin-bottom:14px;">
-              <label style="display:block;font-size:13px;font-weight:600;color:#475569;margin-bottom:6px;">End Location</label>
-              <select id="routeEndLoc" style="width:100%;padding:10px 12px;border:1px solid #cbd5e1;border-radius:8px;font-size:14px;outline:none;">
-                ${deptOptions}
+                ${nextDeptOptions}
               </select>
             </div>
           </div>
           <div style="padding:12px 24px 20px;display:flex;gap:10px;justify-content:flex-end;border-top:1px solid #f1f5f9;">
             <button onclick="document.getElementById('routeDocumentModal').remove()" style="padding:10px 20px;border:1px solid #e2e8f0;background:#fff;border-radius:8px;cursor:pointer;font-weight:500;color:#64748b;">Cancel</button>
-            <button type="button" onclick="openRouteDebugModal(window.__trackingLastRouteDebug)" style="padding:10px 20px;border:1px solid #cbd5e1;background:#fff;border-radius:8px;cursor:pointer;font-weight:600;color:#334155;">Debug</button>
-            <button id="routeSubmitBtn" onclick="submitRouteDocument('${docId}', '${docType}', '${empName}', '${currentHolder}', '${mobileTs}', '${docHash}', '${filePath}')"
+            <button id="routeSubmitBtn" onclick="submitRouteDocument('${docId}', '${docType}', '${empName}', '${currentHolder}', '${mobileTs}', '${docHash}', '${filePath}', '${endLoc || ''}', '${notificationId || ''}')"
               style="padding:10px 24px;background:#6868AC;color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;display:flex;align-items:center;gap:6px;">
               <i class="fas fa-paper-plane"></i> Route
             </button>
@@ -12614,27 +11928,53 @@ $connection->close();
         </div>`;
       document.body.appendChild(modal);
 
-      // Pre-select end location to match existing
-      if (endLoc) {
-        const endSel = document.getElementById('routeEndLoc');
-        if (endSel) { for (const opt of endSel.options) { if (opt.value.toUpperCase() === endLoc.toUpperCase()) { opt.selected = true; break; } } }
-      }
-
       // Auto-select next dept for payroll
       if (isPayroll) {
-        const idx = PAYROLL_FIXED_ROUTE.findIndex(d => d.toUpperCase() === dept);
+        const idx = PAYROLL_FIXED_ROUTE.findIndex(d => normalizeDeptAlias(d) === dept);
         if (idx >= 0 && idx < PAYROLL_FIXED_ROUTE.length - 1) {
           const nextDept = PAYROLL_FIXED_ROUTE[idx + 1];
           const sel = document.getElementById('routeNextDept');
-          if (sel) { for (const opt of sel.options) { if (opt.value.toUpperCase() === nextDept.toUpperCase()) { opt.selected = true; break; } } }
+          if (sel) { for (const opt of sel.options) { if (normalizeDeptAlias(opt.value) === normalizeDeptAlias(nextDept)) { opt.selected = true; break; } } }
         }
       }
     }
 
-    async function submitRouteDocument(docId, docType, empName, currentHolder, mobileTs, docHash, filePath) {
+    async function submitRouteDocument(docId, docType, empName, currentHolder, mobileTs, docHash, filePath, endLocFromModal, notificationId) {
       const nextDept = document.getElementById('routeNextDept')?.value || '';
-      const endLoc = document.getElementById('routeEndLoc')?.value || '';
       if (!nextDept) { showToast('Please select a department', 'error'); return; }
+      const endLoc = (endLocFromModal || '').toString().trim() || nextDept;
+
+      let effectiveType = (docType || '').trim();
+      let effectiveMobileTs = (mobileTs || '').trim();
+      let effectiveDocHash = (docHash || '').trim();
+      let effectiveFilePath = (filePath || '').trim();
+      let effectiveCurrentHolder = (currentHolder || '').trim();
+      const notifId = (notificationId || '').toString().trim();
+
+      try {
+        const latest = await fetchDocDetail(docId);
+        if (latest) {
+          effectiveType = (latest.type || effectiveType || '').toString().trim();
+          effectiveMobileTs = (latest.mobile_timestamp || effectiveMobileTs || '').toString().trim();
+          effectiveDocHash = (latest.doc_hash || effectiveDocHash || '').toString().trim();
+          effectiveFilePath = (latest.file_path || effectiveFilePath || '').toString().trim();
+          effectiveCurrentHolder = (latest.current_holder || effectiveCurrentHolder || '').toString().trim();
+        }
+      } catch (_) {}
+
+      const myDept = normalizeDeptAlias(window.__trackingUserDept || '');
+      const holderUpper = normalizeDeptAlias(effectiveCurrentHolder || '');
+      if (myDept && holderUpper && myDept !== holderUpper) {
+        showToast('This document holder has changed. Refresh and try again.', 'error');
+        return;
+      }
+
+      const hasTrackingId = String(docId || '').trim().length > 0;
+      const hasStrongIdentity = hasTrackingId || (effectiveMobileTs && effectiveDocHash);
+      if (!hasStrongIdentity && !notifId) {
+        showToast('Cannot route: requires tracking_id or mobile_timestamp+doc_hash.', 'error');
+        return;
+      }
 
       const lockKey = 'route:' + String(docId || '');
       if (window.__trackingActionLocks[lockKey]) {
@@ -12646,55 +11986,43 @@ $connection->close();
       const btn = document.getElementById('routeSubmitBtn');
       if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Routing...'; }
 
-      const senderDept = (window.__trackingUserDept || '').trim();
+      const senderDept = normalizeDeptAlias(window.__trackingUserDept || '');
       const senderName = (window.currentUser || '').trim();
 
       const formData = new FormData();
       formData.append('sender_name', senderName || empName);
       formData.append('sender_department', senderDept);
       formData.append('receiver_department', nextDept);
-      formData.append('file_name', docType + ' - ' + (empName || 'Unknown'));
-      formData.append('type', docType);
+      formData.append('file_name', (effectiveType || docType) + ' - ' + (empName || 'Unknown'));
+      formData.append('type', effectiveType || docType);
       formData.append('tracking_id', docId);
-      formData.append('mobile_timestamp', mobileTs || '');
-      formData.append('doc_hash', docHash || '');
-      formData.append('file_path', filePath || '');
-      formData.append('end_location', endLoc || nextDept);
+      formData.append('mobile_timestamp', effectiveMobileTs || '');
+      formData.append('doc_hash', effectiveDocHash || '');
+      formData.append('file_path', effectiveFilePath || '');
+      formData.append('end_location', endLoc);
       formData.append('status', 'Pending');
-      formData.append('debug', '1');
-
-      const requestDebug = {
-        sender_name: senderName || empName,
-        sender_department: senderDept,
-        receiver_department: nextDept,
-        tracking_id: docId,
-        mobile_timestamp: mobileTs || '',
-        doc_hash: docHash || '',
-        file_path: filePath || '',
-        end_location: endLoc || nextDept,
-      };
+      if (notifId) {
+        formData.append('notification_id', notifId);
+      }
+      if ((effectiveType || docType || '').toLowerCase().includes('payroll')) {
+        formData.append('routing_queue', PAYROLL_FIXED_ROUTE.join(','));
+      }
 
       try {
         const resp = await fetch(ROUTE_API, { method: 'POST', body: formData, credentials: 'include' });
         const raw = await resp.text();
+        if (raw.includes('<' + '?php') || (raw.includes('function ') && raw.includes('$'))) {
+          showToast('Server error: PHP not executing in route endpoint.', 'error');
+          if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane"></i> Route'; }
+          return;
+        }
+
         let data = null;
         try {
           data = JSON.parse(raw);
         } catch (_) {
           data = { success: false, error: 'Invalid JSON response', raw };
         }
-
-        const verifyId = (data && (data.tracking_id || data.track_id)) ? (data.tracking_id || data.track_id) : docId;
-        const postState = await fetchDebugPostState(verifyId, mobileTs, docHash, filePath);
-        pushRouteDebug({
-          action: 'route',
-          docId,
-          request: requestDebug,
-          responseStatus: resp.status,
-          responseData: data,
-          responseRaw: raw,
-          postState: postState && postState.data ? postState.data : postState,
-        });
 
         if (data.success || data.track_id || data.tracking_id) {
           document.getElementById('routeDocumentModal')?.remove();
@@ -12705,12 +12033,6 @@ $connection->close();
           if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane"></i> Route'; }
         }
       } catch (e) {
-        pushRouteDebug({
-          action: 'route',
-          docId,
-          request: requestDebug,
-          error: String(e),
-        });
         showToast('❌ Network error: ' + e.message, 'error');
         if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane"></i> Route'; }
       } finally {
@@ -12729,6 +12051,12 @@ $connection->close();
       document.body.appendChild(toast);
       setTimeout(() => { toast.style.opacity = '0'; toast.style.transition = 'opacity 0.4s'; setTimeout(() => toast.remove(), 500); }, 3000);
     }
+
+    // Expose handlers used by inline onclick attributes in rendered rows/modals.
+    window.webReceiveDocument = webReceiveDocument;
+    window.openRouteModal = openRouteModal;
+    window.submitRouteDocument = submitRouteDocument;
+
     // ──── END WEB ROUTING ────
 
     });

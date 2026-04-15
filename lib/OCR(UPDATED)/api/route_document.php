@@ -140,21 +140,6 @@ function rd_rebuild_routing_queue(mysqli $conn, int $trackId, string $prevHolder
   return $out;
 }
 
-function rd_get_tracking_state(mysqli $conn, int $trackId): ?array {
-  if ($trackId <= 0) return null;
-  $sel = $conn->prepare("SELECT id, type, employee_name, department, current_holder, end_location, status, mobile_timestamp, doc_hash, routing_queue, route_step, file_path FROM tracking WHERE id = ? LIMIT 1");
-  if (!$sel) return null;
-  $sel->bind_param('i', $trackId);
-  if (!$sel->execute()) {
-    $sel->close();
-    return null;
-  }
-  $res = $sel->get_result();
-  $row = $res ? $res->fetch_assoc() : null;
-  $sel->close();
-  return $row ?: null;
-}
-
 try {
   if ($_SERVER['REQUEST_METHOD'] !== 'POST') json_error('Only POST allowed');
 
@@ -226,39 +211,13 @@ try {
   }
   // Optional notification id (activityId) as a fallback identifier
   $notification_id = isset($_POST['notification_id']) ? trim($_POST['notification_id']) : '';
-  $debug = (isset($_POST['debug']) && (string)$_POST['debug'] === '1');
-
-  $debug_in = null;
-  $debug_before_state = null;
-  $debug_after_state = null;
-  $debug_route_meta = null;
-  $debug_diag = null;
-  $debug_recipient_resolution = null;
-  $debug_auto_advance = null;
-  if ($debug) {
-    $debug_in = [
-      'sender_name' => $sender_name,
-      'sender_department' => $sender_department,
-      'receiver_username' => $receiver_username,
-      'receiver_department' => $receiver_department,
-      'type' => $type,
-      'file_name' => $file_name,
-      'file_path' => $file_path,
-      'tracking_id' => $tracking_id,
-      'notification_id' => $notification_id,
-      'mobile_timestamp' => $mobile_timestamp,
-      'doc_hash' => $doc_hash,
-      'end_location' => $end_location,
-      'next_department' => $next_department,
-    ];
-  }
 
   // Routing identity requirement:
   // - sender_name, sender_department, file_name are always required
   // - document identifier can be EITHER mobile_timestamp OR tracking_id
   //   (tracking_id is the most reliable for the one-row-per-document model)
   if ($sender_name === '' || $sender_department === '' || $file_name === '') {
-    json_error('Missing required fields', 400, $debug ? ['debug_in' => $debug_in] : null);
+    json_error('Missing required fields', 400);
   }
   $has_tracking_id = ($tracking_id !== '' && ctype_digit($tracking_id) && (int)$tracking_id > 0);
   $has_notification_id = ($notification_id !== '' && ctype_digit($notification_id) && (int)$notification_id > 0);
@@ -296,14 +255,6 @@ try {
             $current_holder = $nholder;
           }
 
-          if ($debug) {
-            $debug_in['resolved_from_notification'] = [
-              'notification_id' => $nid,
-              'tracking_id' => $tracking_id,
-              'mobile_timestamp' => $mobile_timestamp,
-              'file_path' => $file_path,
-            ];
-          }
         }
       }
       $nsel->close();
@@ -331,14 +282,6 @@ try {
           if ($end_location === '' && $tend !== '') {
             $end_location = $tend;
           }
-          if ($debug) {
-            $debug_in['resolved_from_tracking'] = [
-              'tracking_id' => $tracking_id,
-              'mobile_timestamp' => $mobile_timestamp,
-              'file_path' => $file_path,
-              'end_location' => $end_location,
-            ];
-          }
         }
       }
       $tsel->close();
@@ -346,27 +289,14 @@ try {
   }
 
   if ($mobile_timestamp === '' && !$has_tracking_id && !$has_notification_id) {
-    json_error('Missing routing identity. Provide at least one of: tracking_id, mobile_timestamp, or notification_id.', 400, $debug ? ['debug_in' => $debug_in] : null);
+    json_error('Missing routing identity. Provide at least one of: tracking_id, mobile_timestamp, or notification_id.', 400);
   }
   $has_strong_identity = ($has_tracking_id || ($mobile_timestamp !== '' && $input_doc_hash !== null && trim((string)$input_doc_hash) !== ''));
   if (!$has_strong_identity) {
-    $extra = null;
-    if ($debug) {
-      $extra = [
-        'debug_in' => $debug_in,
-        'identity_error' => [
-          'code' => 'identity_missing',
-          'requires' => 'tracking_id OR (mobile_timestamp + doc_hash)',
-          'got_tracking_id' => $has_tracking_id,
-          'got_mobile_timestamp' => ($mobile_timestamp !== ''),
-          'got_doc_hash' => ($input_doc_hash !== null && trim((string)$input_doc_hash) !== ''),
-        ],
-      ];
-    }
-    json_error('Cannot route with ambiguous identity. Provide tracking_id or both mobile_timestamp and doc_hash.', 400, $extra);
+    json_error('Cannot route with ambiguous identity. Provide tracking_id or both mobile_timestamp and doc_hash.', 400);
   }
   if ($receiver_username === '' && $receiver_department === '') {
-    json_error('Provide receiver_username or receiver_department', 400, $debug ? ['debug_in' => $debug_in] : null);
+    json_error('Provide receiver_username or receiver_department', 400);
   }
   // Fallback department for tracking if not provided
   if ($receiver_department === '') {
@@ -584,9 +514,6 @@ try {
       }
     }
 
-    if ($debug) {
-      $debug_before_state = rd_get_tracking_state($conn, (int)$track_id);
-    }
     // Update existing row: move document to new department/holder and status
     // CRITICAL: NEVER update end_location during routing - it must remain what the first department set
     // Get the original end_location and current state to use in notification and history
@@ -669,9 +596,6 @@ try {
     }
 
     $routeMeta = rd_rebuild_routing_queue($conn, (int)$track_id, (string)$previous_holder, (string)$current_holder);
-    if ($debug) {
-      $debug_route_meta = $routeMeta;
-    }
 
     try {
       firestore_upsert_tracking((string)$track_id, [
@@ -1051,14 +975,6 @@ try {
         $recipientUser = 'department_unknown';
       }
     }
-    if ($debug) {
-      $debug_recipient_resolution = [
-        'path' => $recipientResolution,
-        'recipient_username' => (string)$recipientUser,
-        'recipient_department' => (string)$receiver_department,
-      ];
-    }
-
     if ($insN = $conn->prepare("INSERT INTO notifications (title, content, type, recipient_username, sender_username, department, recipient_department, status, file_url, tracking_id, mobile_timestamp, doc_hash, end_location, current_holder, doc_status) VALUES (?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ? )")) {
       $dept = $sender_department;
       $fileUrl = $file_path;
@@ -1134,18 +1050,6 @@ try {
                 // Prevents route cascade like CBO->ACCOUNTING->CAO in a single request.
                 $holderMatchesExpected = (strcasecmp($curHolder, $expectedDept) === 0);
                 $canAutoAdvance = ($holderMatchesExpected && !$is_routing);
-                if ($debug) {
-                  $debug_auto_advance = [
-                    'holder_match' => $holderMatchesExpected,
-                    'is_routing' => (bool)$is_routing,
-                    'triggered' => false,
-                    'trigger_reason' => $holderMatchesExpected
-                      ? ($is_routing ? 'blocked_active_routing' : 'holder_match')
-                      : ($is_routing ? 'blocked_holder_mismatch_active_routing' : 'holder_mismatch'),
-                    'step_before' => $step,
-                    'expected_department' => $expectedDept,
-                  ];
-                }
                 if ($canAutoAdvance) {
                   $nextStep = $step + 1;
                   $nextDept = $depts[$nextStep] ?? '';
@@ -1157,12 +1061,6 @@ try {
                       $advUpd->execute();
                       $advUpd->close();
                       error_log("[route_document] AUTO-ADVANCE: Memo id=$track_id step $step→$nextStep, next dept=$nextDept");
-                      if ($debug && is_array($debug_auto_advance)) {
-                        $debug_auto_advance['triggered'] = true;
-                        $debug_auto_advance['trigger_reason'] = 'holder_match';
-                        $debug_auto_advance['step_after'] = $nextStep;
-                        $debug_auto_advance['next_department'] = $nextDept;
-                      }
 
                       // Log auto-advance to document_history
                       $histAdv = $conn->prepare("INSERT INTO document_history (doc_id, action, actor_user_id, from_status, to_status, from_holder, to_holder, notes) VALUES (?, 'route', 0, ?, ?, ?, ?, 'Auto-advanced by sequential routing queue')");
@@ -1185,62 +1083,7 @@ try {
     }
   }
 
-  if ($debug && $track_id) {
-    $debug_after_state = rd_get_tracking_state($conn, (int)$track_id);
-
-    $expected_next_department = null;
-    $actual_next_department = isset($debug_after_state['current_holder'])
-      ? strtoupper(trim((string)$debug_after_state['current_holder']))
-      : '';
-    $expected_step = null;
-    $actual_step = isset($debug_after_state['route_step'])
-      ? (int)$debug_after_state['route_step']
-      : null;
-
-    $before_holder = isset($debug_before_state['current_holder'])
-      ? strtoupper(trim((string)$debug_before_state['current_holder']))
-      : '';
-    if ($isPayrollType && $before_holder !== '') {
-      $before_idx = array_search($before_holder, $payrollFixedRoute, true);
-      if ($before_idx !== false && ($before_idx + 1) < count($payrollFixedRoute)) {
-        $expected_next_department = $payrollFixedRoute[$before_idx + 1];
-        $expected_step = $before_idx + 1;
-      }
-    }
-
-    $skip_detected = false;
-    if ($expected_next_department !== null && $actual_next_department !== '') {
-      if (strcasecmp($expected_next_department, $actual_next_department) !== 0) {
-        $skip_detected = true;
-      }
-      if ($expected_step !== null && $actual_step !== null && $actual_step > ($expected_step + 1)) {
-        $skip_detected = true;
-      }
-    }
-
-    $debug_diag = [
-      'expected_next_department' => $expected_next_department,
-      'actual_next_department' => $actual_next_department,
-      'expected_step' => $expected_step,
-      'actual_step' => $actual_step,
-      'step_delta' => ($expected_step !== null && $actual_step !== null) ? ($actual_step - $expected_step) : null,
-      'skip_detected' => $skip_detected,
-      'recipient_resolution' => $debug_recipient_resolution,
-      'auto_advance' => $debug_auto_advance,
-    ];
-  }
-
   $out = ['success' => true, 'tracking_id' => $track_id];
-  if ($debug) {
-    $out['debug'] = [
-      'input' => $debug_in,
-      'before' => $debug_before_state,
-      'route_meta' => $debug_route_meta,
-      'after' => $debug_after_state,
-      'diagnosis' => $debug_diag,
-      'timestamp' => round(microtime(true) * 1000),
-    ];
-  }
   echo json_encode($out);
   $conn->close();
 } catch (Exception $e) {

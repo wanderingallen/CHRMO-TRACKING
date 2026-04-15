@@ -4,7 +4,6 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:cunning_document_scanner/cunning_document_scanner.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_pdfview/flutter_pdfview.dart';
@@ -66,9 +65,6 @@ class _DashboardPageState extends State<DashboardPage>
   int _lastRealtimeRouteMs = 0;
   String _lastNotifSig = ''; // signature to skip redundant setState
   String _lastActivitySig = ''; // signature to skip redundant setState
-  bool _debugToolsEnabled = false;
-  Map<String, dynamic>? _lastRouteDebug;
-  Map<String, dynamic>? _lastReceiveDebug;
 
   late PageController _pageController;
 
@@ -3075,7 +3071,6 @@ class _DashboardPageState extends State<DashboardPage>
         'base': root,
         'next_department': nextDepartment,
         'end_location': effectiveEndLocation,
-        'debug': '1',
       };
       // For payroll documents, pass the fixed routing queue
       if (effectiveType.toLowerCase().contains('payroll')) {
@@ -3096,56 +3091,11 @@ class _DashboardPageState extends State<DashboardPage>
           .post(uri, body: payload)
           .timeout(const Duration(seconds: 12));
       if (mounted) {
-        dynamic decodedBody;
-        try {
-          decodedBody = jsonDecode(r.body);
-        } catch (_) {
-          decodedBody = {'raw': r.body};
-        }
-
-        Map<String, dynamic>? postState;
-        try {
-          postState = await _fetchRoutingMeta(
-            trackingId: tid.isNotEmpty ? tid : null,
-            mobileTimestamp: stableTs.isNotEmpty ? stableTs : null,
-            docHash: resolvedDocHash.isNotEmpty ? resolvedDocHash : null,
-            filePath: resolvedFilePath,
-          );
-        } catch (_) {
-          postState = null;
-        }
-
-        final routeDebug = <String, dynamic>{
-          'action': 'route',
-          'request': payload,
-          'response': decodedBody,
-          'http_status': r.statusCode,
-          'post_state': postState,
-          'timestamp': DateTime.now().toIso8601String(),
-        };
-        _lastRouteDebug = routeDebug;
-        final routeDebugText = _buildDebugSummaryAndJson(
-          action: 'route',
-          payload: routeDebug,
-        );
-
         // Check if server returned PHP source code (indicates server misconfiguration)
         if (r.body.contains('<?php') ||
             (r.body.contains('function ') && r.body.contains('\$'))) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text('Server error: PHP not executing. URL: $uri'),
-              action: _debugToolsEnabled
-                  ? SnackBarAction(
-                      label: 'DEBUG',
-                      onPressed: () {
-                        _showCopyableDebugDialog(
-                          title: 'Route Debug',
-                          message: routeDebugText,
-                          copyText: routeDebugText,
-                        );
-                      },
-                    )
-                  : null));
+              content: Text('Server error: PHP not executing. URL: $uri')));
           return;
         }
         if (r.statusCode < 400) {
@@ -3164,20 +3114,8 @@ class _DashboardPageState extends State<DashboardPage>
                 errorMsg = data['message'].toString();
               }
             } catch (_) {}
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                content: Text('Route failed: $errorMsg'),
-                action: _debugToolsEnabled
-                    ? SnackBarAction(
-                        label: 'DEBUG',
-                        onPressed: () {
-                          _showCopyableDebugDialog(
-                            title: 'Route Debug',
-                            message: routeDebugText,
-                            copyText: routeDebugText,
-                          );
-                        },
-                      )
-                    : null));
+            ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Route failed: $errorMsg')));
             return;
           }
 
@@ -3206,39 +3144,16 @@ class _DashboardPageState extends State<DashboardPage>
             });
           }
 
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-            content: const Text('Routed'),
-            action: _debugToolsEnabled
-                ? SnackBarAction(
-                    label: 'DEBUG',
-                    onPressed: () {
-                      _showCopyableDebugDialog(
-                        title: 'Route Debug',
-                        message: routeDebugText,
-                        copyText: routeDebugText,
-                      );
-                    },
-                  )
-                : null,
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('Routed'),
           ));
+          _identityCache.clear();
           try {
             await _fetchRecentActivity();
           } catch (_) {}
         } else {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text('Route failed (${r.statusCode}): ${r.body}'),
-              action: _debugToolsEnabled
-                  ? SnackBarAction(
-                      label: 'DEBUG',
-                      onPressed: () {
-                        _showCopyableDebugDialog(
-                          title: 'Route Debug',
-                          message: routeDebugText,
-                          copyText: routeDebugText,
-                        );
-                      },
-                    )
-                  : null));
+              content: Text('Route failed (${r.statusCode}): ${r.body}')));
         }
       }
     } catch (e) {
@@ -3294,6 +3209,7 @@ class _DashboardPageState extends State<DashboardPage>
           ScaffoldMessenger.of(context)
               .showSnackBar(const SnackBar(content: Text('Routed')));
         }
+        _identityCache.clear();
         try {
           await _fetchRecentActivity();
         } catch (_) {}
@@ -4498,22 +4414,6 @@ class _DashboardPageState extends State<DashboardPage>
       savedUsername = prefs.getString('user_name');
       savedEmail = prefs.getString('user_email');
       savedDept = prefs.getString('user_department');
-
-      final role = (prefs.getString('user_role') ??
-              prefs.getString('role') ??
-              prefs.getString('user_type') ??
-              '')
-          .trim()
-          .toLowerCase();
-      final isAdminFlag = prefs.getBool('is_admin') == true;
-      final debugOverride = prefs.getBool('enable_route_debug_tools') == true;
-      final usernameSeed =
-          (savedUsername ?? widget.username ?? '').trim().toLowerCase();
-      _debugToolsEnabled = kDebugMode ||
-          debugOverride ||
-          isAdminFlag ||
-          role == 'admin' ||
-          usernameSeed == 'admin';
     } catch (e) {}
 
     if (mounted) {
@@ -5814,13 +5714,6 @@ class _DashboardPageState extends State<DashboardPage>
                 ),
               ),
             ),
-          if (title == 'Recent Documents' && _debugToolsEnabled)
-            IconButton(
-              tooltip: 'Open Debug Center',
-              onPressed: _openDebugCenterDialog,
-              icon: const Icon(Icons.bug_report_outlined,
-                  color: Color(0xFF6868AC), size: 20),
-            ),
           if (onTap != null)
             TextButton(
               onPressed: onTap,
@@ -6048,7 +5941,6 @@ class _DashboardPageState extends State<DashboardPage>
         if (type.isNotEmpty) req.fields['doc_type'] = type;
         if (date.isNotEmpty) req.fields['doc_date'] = date;
       } catch (_) {}
-      req.fields['debug'] = '1';
 
       // Upload PDF file
       final safeType = _safeFilePart(typeCtrlValue(req.fields['doc_type']));
@@ -6257,7 +6149,6 @@ class _DashboardPageState extends State<DashboardPage>
         if (type.isNotEmpty) req.fields['doc_type'] = type;
         if (date.isNotEmpty) req.fields['doc_date'] = date;
       } catch (_) {}
-      req.fields['debug'] = '1';
 
       final safeType = _safeFilePart(typeCtrlValue(req.fields['doc_type']));
       final stamp =
@@ -6532,7 +6423,6 @@ class _DashboardPageState extends State<DashboardPage>
         if (type.isNotEmpty) req.fields['doc_type'] = type;
         if (date.isNotEmpty) req.fields['doc_date'] = date;
       } catch (_) {}
-      req.fields['debug'] = '1';
 
       final safeType = _safeFilePart(typeCtrlValue(req.fields['doc_type']));
       final stamp =
@@ -6743,7 +6633,6 @@ class _DashboardPageState extends State<DashboardPage>
         if (type.isNotEmpty) req.fields['doc_type'] = type;
         if (date.isNotEmpty) req.fields['doc_date'] = date;
       } catch (_) {}
-      req.fields['debug'] = '1';
 
       req.files.add(await http.MultipartFile.fromPath(
         'file',
@@ -6994,7 +6883,7 @@ class _DashboardPageState extends State<DashboardPage>
     );
 
     try {
-      final resp = await http.get(uri);
+      final resp = await http.get(uri).timeout(const Duration(seconds: 8));
       if (resp.statusCode != 200) {
         return null;
       }
@@ -7013,138 +6902,6 @@ class _DashboardPageState extends State<DashboardPage>
     } catch (e) {
       return null;
     }
-  }
-
-  Future<void> _showCopyableDebugDialog({
-    required String title,
-    required String message,
-    String? copyText,
-  }) async {
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(title),
-        content: SingleChildScrollView(
-          child: SelectableText(message),
-        ),
-        actions: [
-          if (copyText != null && copyText.trim().isNotEmpty)
-            TextButton.icon(
-              onPressed: () async {
-                await Clipboard.setData(ClipboardData(text: copyText));
-                if (ctx.mounted) {
-                  ScaffoldMessenger.of(ctx).showSnackBar(
-                    const SnackBar(content: Text('Copied')),
-                  );
-                }
-              },
-              icon: const Icon(Icons.copy),
-              label: const Text('Copy'),
-            ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  String _buildDebugSummaryAndJson({
-    required String action,
-    required Map<String, dynamic> payload,
-  }) {
-    final now = DateTime.now().toIso8601String();
-    final req = (payload['request'] is Map)
-        ? Map<String, dynamic>.from(payload['request'])
-        : <String, dynamic>{};
-    final diagnosis = (payload['response'] is Map &&
-            (payload['response'] as Map)['debug'] is Map &&
-            ((payload['response'] as Map)['debug'] as Map)['diagnosis'] is Map)
-        ? Map<String, dynamic>.from(
-            ((payload['response'] as Map)['debug'] as Map)['diagnosis'] as Map)
-        : <String, dynamic>{};
-
-    final summary = <String>[
-      'Action: ${action.toUpperCase()}',
-      'From: ${(req['sender_department'] ?? req['receiver_department'] ?? 'n/a')}',
-      'To: ${(req['receiver_department'] ?? 'n/a')}',
-      'Tracking ID: ${(req['tracking_id'] ?? payload['tracking_id'] ?? 'n/a')}',
-      'Expected Next: ${(diagnosis['expected_next_department'] ?? 'n/a')}',
-      'Actual Next: ${(diagnosis['actual_next_department'] ?? ((payload['post_state'] as Map?)?['current_holder'] ?? 'n/a'))}',
-      'Skip Detected: ${(diagnosis['skip_detected'] ?? false)}',
-      'Captured At: $now',
-    ].join('\n');
-
-    final prettyJson = const JsonEncoder.withIndent('  ').convert(payload);
-    return '$summary\n\nJSON:\n$prettyJson';
-  }
-
-  Future<void> _openDebugCenterDialog() async {
-    if (!_debugToolsEnabled || !mounted) return;
-
-    final routeDebug = _lastRouteDebug;
-    final receiveDebug = _lastReceiveDebug;
-    final hasAny = routeDebug != null || receiveDebug != null;
-
-    if (!hasAny) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No debug traces captured yet.')),
-      );
-      return;
-    }
-
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Routing Debug Center'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            if (routeDebug != null)
-              ElevatedButton.icon(
-                onPressed: () {
-                  final text = _buildDebugSummaryAndJson(
-                    action: 'route',
-                    payload: routeDebug,
-                  );
-                  _showCopyableDebugDialog(
-                    title: 'Route Debug',
-                    message: text,
-                    copyText: text,
-                  );
-                },
-                icon: const Icon(Icons.alt_route),
-                label: const Text('Latest Route Debug'),
-              ),
-            if (receiveDebug != null)
-              ElevatedButton.icon(
-                onPressed: () {
-                  final text = _buildDebugSummaryAndJson(
-                    action: 'receive',
-                    payload: receiveDebug,
-                  );
-                  _showCopyableDebugDialog(
-                    title: 'Receive Debug',
-                    message: text,
-                    copyText: text,
-                  );
-                },
-                icon: const Icon(Icons.download_done),
-                label: const Text('Latest Receive Debug'),
-              ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
   }
 
   /// Show Return Document Dialog
@@ -8551,40 +8308,11 @@ class _DashboardPageState extends State<DashboardPage>
                                                               ?.isNotEmpty ??
                                                           false));
                                           if (!hasStrongIdentity) {
-                                            final dbgPayload = {
-                                              'action': 'receive',
-                                              'identity_error':
-                                                  'identity_missing',
-                                              'tracking_id':
-                                                  normalizedTrackingId,
-                                              'mobile_timestamp':
-                                                  normalizedMobileTimestamp,
-                                              'doc_hash': normalizedDocHash,
-                                              'notification_id': id,
-                                            };
-                                            final txt =
-                                                const JsonEncoder.withIndent(
-                                                        '  ')
-                                                    .convert(dbgPayload);
-                                            _lastReceiveDebug =
-                                                Map<String, dynamic>.from(
-                                                    dbgPayload);
                                             ScaffoldMessenger.of(context)
                                                 .showSnackBar(
                                               SnackBar(
                                                 content: const Text(
                                                     'Cannot receive: requires tracking_id or mobile_timestamp+doc_hash.'),
-                                                action: SnackBarAction(
-                                                  label: 'DEBUG',
-                                                  textColor: Colors.white,
-                                                  onPressed: () {
-                                                    _showCopyableDebugDialog(
-                                                      title: 'Receive Debug',
-                                                      message: txt,
-                                                      copyText: txt,
-                                                    );
-                                                  },
-                                                ),
                                                 backgroundColor:
                                                     Colors.red.shade700,
                                               ),
@@ -8631,32 +8359,6 @@ class _DashboardPageState extends State<DashboardPage>
                                             postState = null;
                                           }
 
-                                          final receiveDebug =
-                                              <String, dynamic>{
-                                            'action': 'receive',
-                                            'request': {
-                                              'tracking_id':
-                                                  effectiveTrackingId,
-                                              'mobile_timestamp':
-                                                  normalizedMobileTimestamp,
-                                              'doc_hash': normalizedDocHash,
-                                              'file_path': resolvedFilePath,
-                                              'receiver_department':
-                                                  receiverDept,
-                                              'notification_id': id,
-                                            },
-                                            'response': result,
-                                            'post_state': postState,
-                                            'timestamp': DateTime.now()
-                                                .toIso8601String(),
-                                          };
-                                          _lastReceiveDebug = receiveDebug;
-                                          final receiveDebugText =
-                                              _buildDebugSummaryAndJson(
-                                            action: 'receive',
-                                            payload: receiveDebug,
-                                          );
-
                                           // Show success/failure feedback
                                           if (ok) {
                                             ScaffoldMessenger.of(context)
@@ -8677,22 +8379,6 @@ class _DashboardPageState extends State<DashboardPage>
                                                     Colors.green.shade700,
                                                 duration:
                                                     const Duration(seconds: 2),
-                                                action: _debugToolsEnabled
-                                                    ? SnackBarAction(
-                                                        label: 'DEBUG',
-                                                        textColor: Colors.white,
-                                                        onPressed: () {
-                                                          _showCopyableDebugDialog(
-                                                            title:
-                                                                'Receive Debug',
-                                                            message:
-                                                                receiveDebugText,
-                                                            copyText:
-                                                                receiveDebugText,
-                                                          );
-                                                        },
-                                                      )
-                                                    : null,
                                               ),
                                             );
                                           } else {
@@ -8714,27 +8400,12 @@ class _DashboardPageState extends State<DashboardPage>
                                                     Colors.red.shade700,
                                                 duration:
                                                     const Duration(seconds: 3),
-                                                action: _debugToolsEnabled
-                                                    ? SnackBarAction(
-                                                        label: 'DEBUG',
-                                                        textColor: Colors.white,
-                                                        onPressed: () {
-                                                          _showCopyableDebugDialog(
-                                                            title:
-                                                                'Receive Debug',
-                                                            message:
-                                                                receiveDebugText,
-                                                            copyText:
-                                                                receiveDebugText,
-                                                          );
-                                                        },
-                                                      )
-                                                    : null,
                                               ),
                                             );
                                           }
 
                                           if (!ok) return;
+                                          _identityCache.clear();
 
                                           // Record the local received key to avoid repeat taps.
                                           setState(() {
@@ -9617,8 +9288,6 @@ class _DashboardPageState extends State<DashboardPage>
 }
 
 extension _RecentUploadOpeners on _RecentUploadPageState {
-  bool get _debugRecentUpload => false;
-
   Future<Map<String, dynamic>?> _fetchRoutingMetaRecent({
     String? trackingId,
     String? mobileTimestamp,
