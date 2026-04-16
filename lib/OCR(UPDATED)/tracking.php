@@ -35,28 +35,6 @@ function __tracking_document_history_has_doc_type(mysqli $connection): bool {
     return $has;
 }
 
-function __tracking_normalize_department(string $dept): string {
-  $u = strtoupper(trim($dept));
-  if ($u === 'ACCOUNT' || $u === 'ACCOUNTS') {
-    return 'ACCOUNTING';
-  }
-  return $u;
-}
-
-function __tracking_department_aliases(string $dept): array {
-  $u = strtoupper(trim($dept));
-  if ($u === '') {
-    return [];
-  }
-  if ($u === 'ACCOUNTING') {
-    return ['ACCOUNTING', 'ACCOUNT'];
-  }
-  if ($u === 'ACCOUNT' || $u === 'ACCOUNTS') {
-    return ['ACCOUNT', 'ACCOUNTING'];
-  }
-  return [$u];
-}
-
 function __tracking_ensure_department_archives_table(mysqli $connection): bool {
   static $ok = null;
   if ($ok !== null) return $ok;
@@ -1118,18 +1096,10 @@ if (isset($_GET['action']) && $_GET['action'] === 'sidebar_stats') {
     $__ssDeptTypes = '';
     $__ssDeptParams = [];
     if (!$__isAdmin && !empty($_SESSION['user_department'])) {
-      $__ssAliases = __tracking_department_aliases((string)$_SESSION['user_department']);
-      $__ssud = $__ssAliases[0] ?? '';
-      $__ssAlt = $__ssAliases[1] ?? '';
-      if ($__ssud !== '' && $__ssAlt !== '') {
-        $__ssDeptWhere = ' WHERE (UPPER(TRIM(department)) IN (?, ?) OR UPPER(TRIM(current_holder)) IN (?, ?) OR UPPER(TRIM(end_location)) IN (?, ?) OR ((FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) > 0 AND CAST(COALESCE(route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) - 1)) OR (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) > 0 AND CAST(COALESCE(route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) - 1))))';
-        $__ssDeptTypes = 'ssssssssss';
-        $__ssDeptParams = [$__ssud, $__ssAlt, $__ssud, $__ssAlt, $__ssud, $__ssAlt, $__ssud, $__ssud, $__ssAlt, $__ssAlt];
-      } elseif ($__ssud !== '') {
-        $__ssDeptWhere = ' WHERE (UPPER(TRIM(department)) = ? OR UPPER(TRIM(current_holder)) = ? OR UPPER(TRIM(end_location)) = ? OR (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) > 0 AND CAST(COALESCE(route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) - 1)))';
+        $__ssud = strtoupper(trim($_SESSION['user_department']));
+        $__ssDeptWhere = ' WHERE (UPPER(TRIM(department)) = ? OR UPPER(TRIM(current_holder)) = ? OR UPPER(TRIM(end_location)) = ? OR (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \', \'\'))) > 0 AND CAST(COALESCE(route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \', \'\'))) - 1)))';
         $__ssDeptTypes = 'sssss';
         $__ssDeptParams = [$__ssud, $__ssud, $__ssud, $__ssud, $__ssud];
-      }
     }
 
     $pendingCount = 0;
@@ -1483,18 +1453,10 @@ if (isset($_GET['action']) && $_GET['action'] === 'tracking_latest') {
     $__latestDeptTypes = '';
     $__latestDeptParams = [];
     if (!$__isAdmin && !empty($_SESSION['user_department'])) {
-      $__lAliases = __tracking_department_aliases((string)$_SESSION['user_department']);
-      $__lud = $__lAliases[0] ?? '';
-      $__ludAlt = $__lAliases[1] ?? '';
-      if ($__lud !== '' && $__ludAlt !== '') {
-        $__latestDeptWhere = ' AND (UPPER(TRIM(department)) IN (?, ?) OR UPPER(TRIM(current_holder)) IN (?, ?) OR UPPER(TRIM(end_location)) IN (?, ?) OR ((FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) > 0 AND CAST(COALESCE(route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) - 1)) OR (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) > 0 AND CAST(COALESCE(route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) - 1))))';
-        $__latestDeptTypes = 'ssssssssss';
-        $__latestDeptParams = [$__lud, $__ludAlt, $__lud, $__ludAlt, $__lud, $__ludAlt, $__lud, $__lud, $__ludAlt, $__ludAlt];
-      } elseif ($__lud !== '') {
-        $__latestDeptWhere = ' AND (UPPER(TRIM(department)) = ? OR UPPER(TRIM(current_holder)) = ? OR UPPER(TRIM(end_location)) = ? OR (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) > 0 AND CAST(COALESCE(route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \' , \'\'))) - 1)))';
+        $__lud = strtoupper(trim($_SESSION['user_department']));
+        $__latestDeptWhere = ' AND (UPPER(TRIM(department)) = ? OR UPPER(TRIM(current_holder)) = ? OR UPPER(TRIM(end_location)) = ? OR (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \', \'\'))) > 0 AND CAST(COALESCE(route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \', \'\'))) - 1)))';
         $__latestDeptTypes = 'sssss';
         $__latestDeptParams = [$__lud, $__lud, $__lud, $__lud, $__lud];
-      }
     }
 
     $docs = [];
@@ -4729,31 +4691,17 @@ if ($dept !== '' && $dept !== 'All Departments') {
 //      their position (route_step >= FIND_IN_SET - 1).  routing_queue is populated
 //      on every routing action, so once a dept routes a doc it stays visible.
 if (!$__isAdmin && !empty($_SESSION['user_department'])) {
-  $udAliases = __tracking_department_aliases((string)$_SESSION['user_department']);
-  $ud = $udAliases[0] ?? '';
-  $udAlt = $udAliases[1] ?? '';
-  if ($ud !== '' && $udAlt !== '') {
-    $clauses[] = '(UPPER(TRIM(tracking.department)) IN (?, ?) OR UPPER(TRIM(tracking.current_holder)) IN (?, ?) OR UPPER(TRIM(tracking.end_location)) IN (?, ?) OR ((FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(tracking.routing_queue, \' \', \'\'))) > 0 AND CAST(COALESCE(tracking.route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(tracking.routing_queue, \' \', \'\'))) - 1)) OR (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(tracking.routing_queue, \' \', \'\'))) > 0 AND CAST(COALESCE(tracking.route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(tracking.routing_queue, \' \', \'\'))) - 1))))';
-    $bindTypes .= 'ssssssssss';
-    $bindParams[] = $ud;
-    $bindParams[] = $udAlt;
-    $bindParams[] = $ud;
-    $bindParams[] = $udAlt;
-    $bindParams[] = $ud;
-    $bindParams[] = $udAlt;
-    $bindParams[] = $ud;
-    $bindParams[] = $ud;
-    $bindParams[] = $udAlt;
-    $bindParams[] = $udAlt;
-  } elseif ($ud !== '') {
-    $clauses[] = '(UPPER(TRIM(tracking.department)) = ? OR UPPER(TRIM(tracking.current_holder)) = ? OR UPPER(TRIM(tracking.end_location)) = ? OR (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(tracking.routing_queue, \' \', \'\'))) > 0 AND CAST(COALESCE(tracking.route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(tracking.routing_queue, \' \', \'\'))) - 1)))';
-    $bindTypes .= 'sssss';
-    $bindParams[] = $ud;
-    $bindParams[] = $ud;
-    $bindParams[] = $ud;
-    $bindParams[] = $ud;
-    $bindParams[] = $ud;
+  $ud = strtoupper(trim($_SESSION['user_department']));
+  if ($ud === 'ACCOUNT') {
+    $ud = 'ACCOUNTING';
   }
+  $clauses[] = '(UPPER(TRIM(tracking.department)) = ? OR UPPER(TRIM(tracking.current_holder)) = ? OR UPPER(TRIM(tracking.end_location)) = ? OR (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(tracking.routing_queue, \' \', \'\'))) > 0 AND CAST(COALESCE(tracking.route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(tracking.routing_queue, \' \', \'\'))) - 1)))';
+  $bindTypes .= 'sssss';
+  $bindParams[] = $ud;
+  $bindParams[] = $ud;
+  $bindParams[] = $ud;
+  $bindParams[] = $ud;
+  $bindParams[] = $ud;
 }
 
 // Per-department archive isolation: hide documents that this user/department has
@@ -4763,6 +4711,9 @@ if (!$__isAdmin && !empty($_SESSION['user_department'])) {
   $archDept = $__isAdmin
       ? 'ADMIN'
       : strtoupper(trim($_SESSION['user_department'] ?? $_SESSION['department'] ?? ''));
+  if ($archDept === 'ACCOUNT') {
+    $archDept = 'ACCOUNTING';
+  }
   if ($__hasDeptArchives && $archDept !== '') {
     $clauses[] = 'NOT EXISTS (SELECT 1 FROM department_archives da WHERE da.tracking_id = tracking.id AND UPPER(TRIM(da.department)) = ?)';
     $bindTypes .= 's';
@@ -8059,15 +8010,15 @@ $connection->close();
         // Department-scoped filtering: department_user only sees documents involving their department
         // route_step gating: dept must be in routing_queue AND step >= dept's 0-based position
         if (!window.__trackingIsAdmin && window.__trackingUserDept) {
-          const ud = normalizeDeptAlias(window.__trackingUserDept);
-          const dept = normalizeDeptAlias(data.department || '');
-          const holder = normalizeDeptAlias(data.current_holder || '');
-          const endLoc = normalizeDeptAlias(data.end_location || '');
+          const ud = normalizeDepartmentName(window.__trackingUserDept);
+          const dept = normalizeDepartmentName(data.department || '');
+          const holder = normalizeDepartmentName(data.current_holder || '');
+          const endLoc = normalizeDepartmentName(data.end_location || '');
           // Check if dept appears in routing_queue AND route_step has reached that position
           let inRoute = false;
           const queue = (data.routing_queue || '');
           if (queue) {
-            const qParts = queue.split(',').map(s => normalizeDeptAlias(s));
+            const qParts = queue.split(',').map(s => normalizeDepartmentName(s));
             const pos = qParts.indexOf(ud); // 0-based
             const step = parseInt(data.route_step || '0', 10);
             inRoute = (pos >= 0 && step >= pos);
@@ -8201,13 +8152,7 @@ $connection->close();
 
     // Department scope for client-side Firestore listener filtering
     window.__trackingIsAdmin = <?php echo $__isAdmin ? 'true' : 'false'; ?>;
-    window.__trackingUserDept = <?php echo json_encode(!empty($_SESSION['user_department']) ? __tracking_normalize_department((string)$_SESSION['user_department']) : ''); ?>;
-
-    function normalizeDeptAlias(value) {
-      const u = (value || '').toString().toUpperCase().trim();
-      if (u === 'ACCOUNT' || u === 'ACCOUNTS') return 'ACCOUNTING';
-      return u;
-    }
+    window.__trackingUserDept = <?php echo json_encode(!empty($_SESSION['user_department']) ? strtoupper(trim($_SESSION['user_department'])) : ''); ?>;
 
     let currentSortColumn = null;
     let currentSortDirection = 'asc'; // 'asc' or 'desc'
@@ -8477,6 +8422,38 @@ $connection->close();
       if (h) return h.toUpperCase();
       const dept = (department || '').toString().trim();
       return dept ? dept.toUpperCase() : '—';
+    }
+
+    function normalizeDepartmentName(value) {
+      const v = (value || '').toString().trim().toUpperCase();
+      if (v === 'ACCOUNT') return 'ACCOUNTING';
+      return v;
+    }
+
+    function departmentsMatch(left, right) {
+      const l = normalizeDepartmentName(left);
+      const r = normalizeDepartmentName(right);
+      return l !== '' && l === r;
+    }
+
+    function isFinalRoutingDepartmentForDoc(doc, userDeptRaw) {
+      const userDept = normalizeDepartmentName(userDeptRaw);
+      if (!userDept || !doc) return false;
+
+      const holder = normalizeDepartmentName(doc.current_holder || doc.department || '');
+      if (!holder || holder !== userDept) return false;
+
+      const type = normalizeDocType(doc.type || '').toLowerCase();
+      if (type.includes('payroll')) {
+        const finalPayrollDept = normalizeDepartmentName(PAYROLL_FIXED_ROUTE[PAYROLL_FIXED_ROUTE.length - 1] || '');
+        return finalPayrollDept !== '' && finalPayrollDept === userDept;
+      }
+
+      const queueRaw = (doc.routing_queue || '').toString().trim();
+      if (!queueRaw) return false;
+      const queue = queueRaw.split(',').map(s => normalizeDepartmentName(s)).filter(Boolean);
+      if (queue.length === 0) return false;
+      return queue[queue.length - 1] === userDept;
     }
 
     function getDocTypeChipClassJS(docType) {
@@ -8788,14 +8765,14 @@ $connection->close();
                   <i class="fas fa-archive"></i> Archive
                 </button>
                 ${(!window.__trackingIsAdmin && window.__trackingUserDept &&
-                   doc.current_holder && normalizeDeptAlias(doc.current_holder) === normalizeDeptAlias(window.__trackingUserDept) &&
+                   doc.current_holder && departmentsMatch(doc.current_holder, window.__trackingUserDept) &&
                    doc.status === 'Pending')
                   ? `<button class="action-button" style="background:var(--success-color,#22c55e);color:#fff;" title="Mark as Received"
                        onclick="webReceiveDocument('${doc.id}')">
                        <i class="fas fa-check-circle"></i> Receive
                      </button>` : ''}
                 ${(!window.__trackingIsAdmin && window.__trackingUserDept &&
-                   doc.current_holder && normalizeDeptAlias(doc.current_holder) === normalizeDeptAlias(window.__trackingUserDept) &&
+                   doc.current_holder && departmentsMatch(doc.current_holder, window.__trackingUserDept) &&
                    (doc.status === 'In Review' || doc.status === 'Received'))
                   ? `<button class="action-button" style="background:var(--brand-primary,#6868AC);color:#fff;" title="Route to Department"
                        onclick="openRouteModal('${doc.id}', '${displayType}', '${doc.employee_name || ''}', '${doc.current_holder || ''}', '${doc.end_location || ''}', '${doc.mobile_timestamp || ''}', '${doc.doc_hash || ''}', '${doc.file_path || ''}', '${doc.routing_queue || ''}', '${doc.notification_id || doc.latest_notification_id || ''}')">
@@ -11787,26 +11764,96 @@ $connection->close();
     ?>;
 
     window.__trackingActionLocks = window.__trackingActionLocks || {};
-    async function webReceiveDocument(docId) {
-      const proceed = await new Promise((resolve) => {
-        openConfirmModal(
-          'Confirm Document Receipt',
-          'Mark this document as Received? This will set its status to In Review under your department so you can proceed with routing.',
-          () => resolve(true)
-        );
-        const onCancel = () => resolve(false);
-        document.getElementById('cancelConfirmBtn')?.addEventListener('click', onCancel, { once: true });
-        document.getElementById('closeConfirmModalBtn')?.addEventListener('click', onCancel, { once: true });
-      });
-      if (!proceed) return;
 
+    function showReceiveConfirmModal(docId) {
+      return new Promise((resolve) => {
+        const existing = document.getElementById('receiveConfirmModal');
+        if (existing) existing.remove();
+
+        const modal = document.createElement('div');
+        modal.id = 'receiveConfirmModal';
+        modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.45);z-index:10050;display:flex;align-items:center;justify-content:center;padding:16px;';
+        modal.innerHTML = `
+          <div style="width:min(460px,94vw);background:#fff;border:1px solid #e2e8f0;border-radius:16px;box-shadow:0 18px 48px rgba(15,23,42,0.22);overflow:hidden;">
+            <div style="padding:18px 20px;border-bottom:1px solid #eef2f7;display:flex;align-items:center;gap:10px;">
+              <div style="width:34px;height:34px;border-radius:10px;background:rgba(104,104,172,0.12);display:flex;align-items:center;justify-content:center;color:#6868AC;">
+                <i class="fas fa-check-circle"></i>
+              </div>
+              <div>
+                <div style="font-size:16px;font-weight:700;color:#1e293b;line-height:1.2;">Confirm Receipt</div>
+                <div style="font-size:12px;color:#64748b;">Document ID: ${String(docId || '').trim() || 'N/A'}</div>
+              </div>
+            </div>
+            <div style="padding:18px 20px 12px;color:#334155;font-size:14px;line-height:1.55;">
+              Mark this document as Received and move its status to In Review for your department?
+            </div>
+            <div style="padding:12px 20px 20px;display:flex;justify-content:flex-end;gap:10px;">
+              <button type="button" id="receiveCancelBtn" style="padding:10px 16px;border:1px solid #cbd5e1;background:#fff;color:#475569;border-radius:10px;font-weight:600;cursor:pointer;">Cancel</button>
+              <button type="button" id="receiveConfirmBtn" style="padding:10px 16px;border:none;background:#6868AC;color:#fff;border-radius:10px;font-weight:700;cursor:pointer;">Mark as Received</button>
+            </div>
+          </div>`;
+
+        const close = (answer) => {
+          if (modal.parentNode) modal.parentNode.removeChild(modal);
+          resolve(answer);
+        };
+
+        document.body.appendChild(modal);
+        modal.querySelector('#receiveCancelBtn')?.addEventListener('click', () => close(false));
+        modal.querySelector('#receiveConfirmBtn')?.addEventListener('click', () => close(true));
+        modal.addEventListener('click', (ev) => {
+          if (ev.target === modal) close(false);
+        });
+      });
+    }
+
+    function showRouteSuccessModal(nextDept) {
+      return new Promise((resolve) => {
+        const existing = document.getElementById('routeSuccessModal');
+        if (existing) existing.remove();
+
+        const modal = document.createElement('div');
+        modal.id = 'routeSuccessModal';
+        modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.45);z-index:10055;display:flex;align-items:center;justify-content:center;padding:16px;';
+        modal.innerHTML = `
+          <div style="width:min(470px,94vw);background:#fff;border:1px solid #e2e8f0;border-radius:16px;box-shadow:0 18px 48px rgba(15,23,42,0.22);overflow:hidden;">
+            <div style="padding:18px 20px;border-bottom:1px solid #eef2f7;display:flex;align-items:center;gap:10px;">
+              <div style="width:34px;height:34px;border-radius:10px;background:rgba(34,197,94,0.12);display:flex;align-items:center;justify-content:center;color:#16a34a;">
+                <i class="fas fa-check"></i>
+              </div>
+              <div style="font-size:16px;font-weight:700;color:#1e293b;line-height:1.2;">Document Routed</div>
+            </div>
+            <div style="padding:18px 20px 12px;color:#334155;font-size:14px;line-height:1.55;">
+              The document was routed successfully to <strong>${String(nextDept || '').trim() || 'the next department'}</strong>.
+            </div>
+            <div style="padding:12px 20px 20px;display:flex;justify-content:flex-end;gap:10px;">
+              <button type="button" id="routeSuccessContinueBtn" style="padding:10px 16px;border:none;background:#6868AC;color:#fff;border-radius:10px;font-weight:700;cursor:pointer;">Continue</button>
+            </div>
+          </div>`;
+
+        const close = () => {
+          if (modal.parentNode) modal.parentNode.removeChild(modal);
+          resolve();
+        };
+
+        document.body.appendChild(modal);
+        modal.querySelector('#routeSuccessContinueBtn')?.addEventListener('click', close);
+        modal.addEventListener('click', (ev) => {
+          if (ev.target === modal) close();
+        });
+      });
+    }
+
+    async function webReceiveDocument(docId) {
+      const confirmed = await showReceiveConfirmModal(docId);
+      if (!confirmed) return;
       const lockKey = 'receive:' + String(docId || '');
       if (window.__trackingActionLocks[lockKey]) {
         showToast('Receive request is already in progress', 'error');
         return;
       }
       window.__trackingActionLocks[lockKey] = true;
-      const dept = normalizeDeptAlias(window.__trackingUserDept || '');
+      const dept = normalizeDepartmentName(window.__trackingUserDept || '');
       const url = window.location.pathname + '?action=mark_received&id=' + encodeURIComponent(docId) + '&receiver_department=' + encodeURIComponent(dept);
       try {
         const resp = await fetch(url, { cache: 'no-store', credentials: 'include' });
@@ -11826,14 +11873,26 @@ $connection->close();
             if (statusCell) { statusCell.textContent = data.new_status || 'In Review'; statusCell.className = 'status-pill status-in-review'; }
             row.setAttribute('data-status', data.new_status || 'In Review');
           }
-          showToast('✅ Document received successfully!', 'success');
+          showToast('Document marked as Received successfully.', 'success');
+
+          try {
+            const latest = await fetchDocDetail(docId);
+            if (latest && isFinalRoutingDepartmentForDoc(latest, window.__trackingUserDept || '')) {
+              openConfirmModal(
+                'Final Department Step',
+                'This document is now at the final routing department. Upload the final document to mark it as Completed.',
+                () => openFinalDocumentCapture(docId, latest.type || 'Document')
+              );
+            }
+          } catch (_) {}
+
           // Refresh the table
           if (typeof window.applyFiltersAndSearch === 'function') window.applyFiltersAndSearch();
         } else {
-          showToast('❌ ' + (data.error || 'Failed to receive'), 'error');
+          showToast((data.error || 'Failed to receive'), 'error');
         }
       } catch (e) {
-        showToast('❌ Network error: ' + e.message, 'error');
+        showToast('Network error: ' + e.message, 'error');
       } finally {
         delete window.__trackingActionLocks[lockKey];
       }
@@ -11844,15 +11903,16 @@ $connection->close();
       const existing = document.getElementById('routeDocumentModal');
       if (existing) existing.remove();
 
-      const dept = normalizeDeptAlias(window.__trackingUserDept || '');
+      const dept = (window.__trackingUserDept || '').toUpperCase().trim();
+      const normalizedDept = normalizeDepartmentName(dept);
       const isPayroll = docType.toLowerCase().indexOf('payroll') !== -1;
-      const availableDepts = ALL_DEPARTMENTS.filter(d => normalizeDeptAlias(d) !== dept);
-      const holder = normalizeDeptAlias(currentHolder || '');
-      const payrollCurrent = holder || dept;
+      const availableDepts = ALL_DEPARTMENTS.filter(d => normalizeDepartmentName(d) !== normalizedDept);
+      const holder = normalizeDepartmentName(currentHolder || '');
+      const payrollCurrent = holder || normalizedDept;
 
       let nextDeptChoices = availableDepts;
       if (isPayroll) {
-        const idx = PAYROLL_FIXED_ROUTE.findIndex(d => normalizeDeptAlias(d) === payrollCurrent);
+        const idx = PAYROLL_FIXED_ROUTE.findIndex(d => d.toUpperCase() === payrollCurrent);
         if (idx >= 0 && idx < PAYROLL_FIXED_ROUTE.length - 1) {
           nextDeptChoices = [PAYROLL_FIXED_ROUTE[idx + 1]];
         } else {
@@ -11872,7 +11932,7 @@ $connection->close();
       let payrollHtml = '';
       if (isPayroll) {
         const steps = PAYROLL_FIXED_ROUTE.map((d, i) => {
-          const isCurrent = normalizeDeptAlias(d) === dept;
+          const isCurrent = normalizeDepartmentName(d) === normalizedDept;
           return `<span style="display:inline-flex;align-items:center;padding:4px 10px;border-radius:6px;font-size:12px;font-weight:600;
             background:${isCurrent ? '#6868AC' : '#ede9fe'};color:${isCurrent ? '#fff' : '#5b21b6'};">${d}</span>` +
             (i < PAYROLL_FIXED_ROUTE.length - 1 ? '<i class="fas fa-arrow-right" style="color:#a78bfa;margin:0 4px;font-size:10px;"></i>' : '');
@@ -11930,11 +11990,11 @@ $connection->close();
 
       // Auto-select next dept for payroll
       if (isPayroll) {
-        const idx = PAYROLL_FIXED_ROUTE.findIndex(d => normalizeDeptAlias(d) === dept);
+        const idx = PAYROLL_FIXED_ROUTE.findIndex(d => normalizeDepartmentName(d) === normalizedDept);
         if (idx >= 0 && idx < PAYROLL_FIXED_ROUTE.length - 1) {
           const nextDept = PAYROLL_FIXED_ROUTE[idx + 1];
           const sel = document.getElementById('routeNextDept');
-          if (sel) { for (const opt of sel.options) { if (normalizeDeptAlias(opt.value) === normalizeDeptAlias(nextDept)) { opt.selected = true; break; } } }
+          if (sel) { for (const opt of sel.options) { if (opt.value.toUpperCase() === nextDept.toUpperCase()) { opt.selected = true; break; } } }
         }
       }
     }
@@ -11962,8 +12022,8 @@ $connection->close();
         }
       } catch (_) {}
 
-      const myDept = normalizeDeptAlias(window.__trackingUserDept || '');
-      const holderUpper = normalizeDeptAlias(effectiveCurrentHolder || '');
+      const myDept = normalizeDepartmentName(window.__trackingUserDept || '');
+      const holderUpper = normalizeDepartmentName(effectiveCurrentHolder || '');
       if (myDept && holderUpper && myDept !== holderUpper) {
         showToast('This document holder has changed. Refresh and try again.', 'error');
         return;
@@ -11986,7 +12046,7 @@ $connection->close();
       const btn = document.getElementById('routeSubmitBtn');
       if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Routing...'; }
 
-      const senderDept = normalizeDeptAlias(window.__trackingUserDept || '');
+      const senderDept = normalizeDepartmentName((window.__trackingUserDept || '').trim());
       const senderName = (window.currentUser || '').trim();
 
       const formData = new FormData();
@@ -12026,14 +12086,14 @@ $connection->close();
 
         if (data.success || data.track_id || data.tracking_id) {
           document.getElementById('routeDocumentModal')?.remove();
-          showToast('✅ Document routed to ' + nextDept + '!', 'success');
+          await showRouteSuccessModal(nextDept);
           if (typeof window.applyFiltersAndSearch === 'function') window.applyFiltersAndSearch();
         } else {
-          showToast('❌ ' + (data.message || data.error || 'Routing failed'), 'error');
+          showToast((data.message || data.error || 'Routing failed'), 'error');
           if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane"></i> Route'; }
         }
       } catch (e) {
-        showToast('❌ Network error: ' + e.message, 'error');
+        showToast('Network error: ' + e.message, 'error');
         if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane"></i> Route'; }
       } finally {
         delete window.__trackingActionLocks[lockKey];
