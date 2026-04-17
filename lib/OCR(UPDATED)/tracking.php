@@ -35,6 +35,23 @@ function __tracking_document_history_has_doc_type(mysqli $connection): bool {
     return $has;
 }
 
+  function __tracking_resolve_archive_actor_department(?array $docRow = null): string {
+    $adminRoles = ['admin', 'administrator', 'superadmin', 'super_admin'];
+    $role = strtolower(trim((string)($_SESSION['user_role'] ?? '')));
+    if ($role !== '' && in_array($role, $adminRoles, true)) {
+      return 'ADMIN';
+    }
+
+    $dept = trim((string)($_SESSION['user_department'] ?? $_SESSION['department'] ?? ''));
+    if ($dept === '' && is_array($docRow)) {
+      $dept = trim((string)($docRow['current_holder'] ?? $docRow['department'] ?? ''));
+    }
+    if ($dept === '') {
+      return 'SYSTEM';
+    }
+    return strtoupper($dept);
+  }
+
 function __tracking_ensure_department_archives_table(mysqli $connection): bool {
   static $ok = null;
   if ($ok !== null) return $ok;
@@ -2072,18 +2089,19 @@ if (isset($_GET['action']) && $_GET['action'] === 'mark_archived') {
 
             // Log to document_history so timeline remains visible after archiving
             $actor_id = isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0;
+            $archiveActorDept = __tracking_resolve_archive_actor_department();
             $mark_arch_type = '';
             if ($selT = $connection->prepare("SELECT type FROM tracking WHERE id=? LIMIT 1")) { $selT->bind_param('i', $id); if ($selT->execute()) { $rT = $selT->get_result(); if ($rT && ($rowT = $rT->fetch_assoc())) $mark_arch_type = $rowT['type'] ?? ''; } $selT->close(); }
             $hasDocType = __tracking_document_history_has_doc_type($connection);
             $h = $connection->prepare($hasDocType
-                ? "INSERT INTO document_history (doc_id, doc_type, action, actor_user_id, to_status, to_holder, notes) VALUES (?, ?, 'archive', ?, 'Archived', 'Digital Archive', 'Archived')"
-                : "INSERT INTO document_history (doc_id, action, actor_user_id, to_status, to_holder, notes) VALUES (?, 'archive', ?, 'Archived', 'Digital Archive', 'Archived')"
+                ? "INSERT INTO document_history (doc_id, doc_type, action, actor_user_id, to_status, to_holder, notes) VALUES (?, ?, 'archive', ?, 'Archived', ?, 'Archived')"
+                : "INSERT INTO document_history (doc_id, action, actor_user_id, to_status, to_holder, notes) VALUES (?, 'archive', ?, 'Archived', ?, 'Archived')"
             );
             if ($h) {
                 if ($hasDocType) {
-                  $h->bind_param('isi', $id, $mark_arch_type, $actor_id);
+                  $h->bind_param('isis', $id, $mark_arch_type, $actor_id, $archiveActorDept);
                 } else {
-                  $h->bind_param('ii', $id, $actor_id);
+                  $h->bind_param('iis', $id, $actor_id, $archiveActorDept);
                 }
                 $h->execute();
                 $h->close();
@@ -2717,8 +2735,8 @@ if (isset($_GET['action']) && $_GET['action'] === 'doc_detail') {
                                     $nodeStatus = 'review'; // In Review status
                                     break;
                                 case 'archive':
-                                    $nodeDept = 'Digital Archive';
-                                    $actionText = 'Document Archived';
+                                  $nodeDept = $hrow['actor_department'] ?: ($hrow['to_holder'] ?: ($hrow['from_holder'] ?: 'System'));
+                                  $actionText = "Archived by {$nodeDept}";
                                     $nodeStatus = 'completed';
                                     break;
                                 case 'complete':
@@ -3574,16 +3592,21 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         }
         // Log archive in history for each affected doc
         $actor_id = $_SESSION['user_id'] ?? null;
+        $archiveActorDept = __tracking_resolve_archive_actor_department([
+          'current_holder' => $holder ?? '',
+          'department' => $department ?? ''
+        ]);
         foreach ($dup_ids as $dupId) {
+          $dupIdInt = (int)$dupId;
           $hasDocTypeCol = __tracking_document_history_has_doc_type($connection);
           if ($h2 = $connection->prepare($hasDocTypeCol
-            ? "INSERT INTO document_history (doc_id, doc_type, action, actor_user_id, to_status, to_holder) VALUES (?, ?, 'archive', ?, 'Archived', 'Digital Archive')"
-            : "INSERT INTO document_history (doc_id, action, actor_user_id, to_status, to_holder) VALUES (?, 'archive', ?, 'Archived', 'Digital Archive')"
+            ? "INSERT INTO document_history (doc_id, doc_type, action, actor_user_id, to_status, to_holder) VALUES (?, ?, 'archive', ?, 'Archived', ?)"
+            : "INSERT INTO document_history (doc_id, action, actor_user_id, to_status, to_holder) VALUES (?, 'archive', ?, 'Archived', ?)"
           )) {
             if ($hasDocTypeCol) {
-              $h2->bind_param('ssi', $dupId, $type, $actor_id);
+              $h2->bind_param('isss', $dupIdInt, $type, $actor_id, $archiveActorDept);
             } else {
-              $h2->bind_param('si', $dupId, $actor_id);
+              $h2->bind_param('iss', $dupIdInt, $actor_id, $archiveActorDept);
             }
             $h2->execute();
             $h2->close();
@@ -3722,16 +3745,20 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             if ($stmtA) {
                 $stmtA->bind_param('s', $affected_id);
                 if ($stmtA->execute()) {
+                    $archiveActorDept = __tracking_resolve_archive_actor_department([
+                      'current_holder' => $holder ?? '',
+                      'department' => $department ?? ''
+                    ]);
                     $hasDocTypeCol = __tracking_document_history_has_doc_type($connection);
                     $h2 = $connection->prepare($hasDocTypeCol
-                      ? "INSERT INTO document_history (doc_id, doc_type, action, actor_user_id, to_status, to_holder) VALUES (?, ?, 'archive', ?, 'Archived', 'Digital Archive')"
-                      : "INSERT INTO document_history (doc_id, action, actor_user_id, to_status, to_holder) VALUES (?, 'archive', ?, 'Archived', 'Digital Archive')"
+                      ? "INSERT INTO document_history (doc_id, doc_type, action, actor_user_id, to_status, to_holder) VALUES (?, ?, 'archive', ?, 'Archived', ?)"
+                      : "INSERT INTO document_history (doc_id, action, actor_user_id, to_status, to_holder) VALUES (?, 'archive', ?, 'Archived', ?)"
                     );
                     if ($h2) {
                       if ($hasDocTypeCol) {
-                        $h2->bind_param('iss', $affected_id, $type, $actor_id);
+                        $h2->bind_param('isss', $affected_id, $type, $actor_id, $archiveActorDept);
                       } else {
-                        $h2->bind_param('is', $affected_id, $actor_id);
+                        $h2->bind_param('iss', $affected_id, $actor_id, $archiveActorDept);
                       }
                       $h2->execute();
                       $h2->close();
@@ -4312,16 +4339,20 @@ if (isset($_GET['action']) && $_GET['action'] === 'archive_group') {
     }
 
     $rType = $r['type'] ?? '';
+    $archiveActorDept = __tracking_resolve_archive_actor_department([
+      'current_holder' => $r['current_holder'] ?? '',
+      'department' => $r['department'] ?? ''
+    ]);
     $hasDocTypeCol = __tracking_document_history_has_doc_type($connection);
     $h = $connection->prepare($hasDocTypeCol
-      ? "INSERT INTO document_history (doc_id, doc_type, action, actor_user_id, to_status, to_holder, notes) VALUES (?, ?, 'archive', ?, 'Archived', 'Digital Archive', 'Group archived announcement')"
-      : "INSERT INTO document_history (doc_id, action, actor_user_id, to_status, to_holder, notes) VALUES (?, 'archive', ?, 'Archived', 'Digital Archive', 'Group archived announcement')"
+      ? "INSERT INTO document_history (doc_id, doc_type, action, actor_user_id, to_status, to_holder, notes) VALUES (?, ?, 'archive', ?, 'Archived', ?, 'Group archived announcement')"
+      : "INSERT INTO document_history (doc_id, action, actor_user_id, to_status, to_holder, notes) VALUES (?, 'archive', ?, 'Archived', ?, 'Group archived announcement')"
     );
     if ($h) {
       if ($hasDocTypeCol) {
-        $h->bind_param('iss', $rid, $rType, $actor_id);
+        $h->bind_param('isss', $rid, $rType, $actor_id, $archiveActorDept);
       } else {
-        $h->bind_param('is', $rid, $actor_id);
+        $h->bind_param('iss', $rid, $actor_id, $archiveActorDept);
       }
       $h->execute();
       $h->close();
@@ -4382,8 +4413,12 @@ if (isset($_GET['archive_id'])) {
         }
         $actor_id = $_SESSION['user_id'] ?? null;
         $galleryDocType = $doc['type'] ?? '';
-        $h = $connection->prepare("INSERT INTO document_history (doc_id, doc_type, action, actor_user_id, to_status, to_holder) VALUES (?, ?, 'archive', ?, 'Archived', 'Digital Archive')");
-        if ($h) { $h->bind_param('sss', $archive_id, $galleryDocType, $actor_id); $h->execute(); $h->close(); }
+        $archiveActorDept = __tracking_resolve_archive_actor_department([
+          'current_holder' => $doc['current_holder'] ?? '',
+          'department' => $doc['department'] ?? ''
+        ]);
+        $h = $connection->prepare("INSERT INTO document_history (doc_id, doc_type, action, actor_user_id, to_status, to_holder) VALUES (?, ?, 'archive', ?, 'Archived', ?)");
+        if ($h) { $h->bind_param('ssss', $archive_id, $galleryDocType, $actor_id, $archiveActorDept); $h->execute(); $h->close(); }
         header("Location: tracking.php?status=archived");
         exit();
     }
@@ -4527,16 +4562,20 @@ if (isset($_GET['archive_id'])) {
     }
     $actor_id = $_SESSION['user_id'] ?? null;
     $archDocType = $doc['type'] ?? '';
+    $archiveActorDept = __tracking_resolve_archive_actor_department([
+      'current_holder' => $doc['current_holder'] ?? '',
+      'department' => $doc['department'] ?? ''
+    ]);
     $hasDocTypeCol = __tracking_document_history_has_doc_type($connection);
     $h = $connection->prepare($hasDocTypeCol
-      ? "INSERT INTO document_history (doc_id, doc_type, action, actor_user_id, to_status, to_holder) VALUES (?, ?, 'archive', ?, 'Archived', 'Digital Archive')"
-      : "INSERT INTO document_history (doc_id, action, actor_user_id, to_status, to_holder) VALUES (?, 'archive', ?, 'Archived', 'Digital Archive')"
+      ? "INSERT INTO document_history (doc_id, doc_type, action, actor_user_id, to_status, to_holder) VALUES (?, ?, 'archive', ?, 'Archived', ?)"
+      : "INSERT INTO document_history (doc_id, action, actor_user_id, to_status, to_holder) VALUES (?, 'archive', ?, 'Archived', ?)"
     );
     if ($h) {
       if ($hasDocTypeCol) {
-        $h->bind_param('sss', $archive_id, $archDocType, $actor_id);
+        $h->bind_param('ssss', $archive_id, $archDocType, $actor_id, $archiveActorDept);
       } else {
-        $h->bind_param('ss', $archive_id, $actor_id);
+        $h->bind_param('sss', $archive_id, $actor_id, $archiveActorDept);
       }
       $h->execute();
       $h->close();
@@ -4888,7 +4927,7 @@ $sqlPage = "SELECT
             FROM tracking
             LEFT JOIN control ON control.user = tracking.employee_name
             $where
-            ORDER BY tracking.date_submitted DESC
+            ORDER BY tracking.date_submitted DESC, tracking.id DESC
             LIMIT ? OFFSET ?";
 $stmtPage = $connection->prepare($sqlPage);
 if ($stmtPage) {
@@ -8300,6 +8339,7 @@ $connection->close();
     const prevPageBtn = document.getElementById('prevPageBtn');
     const nextPageBtn = document.getElementById('nextPageBtn');
     const pageInfoSpan = document.getElementById('pageInfo');
+    const isServerSideMode = !!(pageInfoSpan && pageInfoSpan.dataset.serverside === '1');
 
     // View Document button inside details modal
     const detailViewDocumentBtn = document.getElementById('detailViewDocumentBtn');
@@ -8538,6 +8578,22 @@ $connection->close();
       return out.flatMap(x => (x && x.__group && x.items.length === 1) ? [x.items[0]] : [x]);
     }
 
+    function canShowFinalizeAction(doc) {
+      if (!doc || window.__trackingIsAdmin) return false;
+      const status = (doc.status || '').toString().trim().toLowerCase();
+      if (!(status === 'in review' || status === 'received')) return false;
+      return isFinalRoutingDepartmentForDoc(doc, window.__trackingUserDept || '');
+    }
+
+    function getFinalizeActionHtml(doc, compact = false) {
+      if (!canShowFinalizeAction(doc)) return '';
+      const docId = String(doc.id || '').replace(/'/g, "\\'");
+      const docType = String(normalizeDocType(doc.type || 'Document')).replace(/'/g, "\\'");
+      const icon = compact ? '<i class="fas fa-file-upload"></i>' : '<i class="fas fa-file-upload"></i> Finalize';
+      const title = 'Upload Final Document to Complete';
+      return `<button class="action-button" style="background:#0f766e;color:#fff;" title="${title}" onclick="openFinalDocumentCapture('${docId}', '${docType}')">${icon}</button>`;
+    }
+
     function renderDocuments(docsToRender) {
       const displayStatus = (s) => {
         const norm = (s || '').toString().toLowerCase();
@@ -8683,6 +8739,7 @@ $connection->close();
                         <button class="action-button timeline" onclick="viewDocumentTimeline('${it.id}')">
                           <i class="fas fa-history"></i> Timeline
                         </button>
+                        ${getFinalizeActionHtml(it)}
                         ${itIsAnnouncement ? '' : `
                         <button class="action-button archive" onclick="archiveDocumentConfirm('${it.id}', '${itType}')" ${(it.status === 'Archived' || it.status === 'Rejected') ? 'disabled' : ''}>
                           <i class="fas fa-archive"></i> Archive
@@ -8778,6 +8835,7 @@ $connection->close();
                        onclick="openRouteModal('${doc.id}', '${displayType}', '${doc.employee_name || ''}', '${doc.current_holder || ''}', '${doc.end_location || ''}', '${doc.mobile_timestamp || ''}', '${doc.doc_hash || ''}', '${doc.file_path || ''}', '${doc.routing_queue || ''}', '${doc.notification_id || doc.latest_notification_id || ''}')">
                        <i class="fas fa-share"></i> Route
                      </button>` : ''}
+                ${getFinalizeActionHtml(doc)}
               </div>
             </td>
           `;
@@ -8868,6 +8926,7 @@ $connection->close();
               <div style="display:flex;gap:8px;flex-shrink:0;">
                 <button class="action-button info" onclick="viewDocumentInfo('${d.id}')" title="Document Info"><i class="fas fa-info-circle"></i></button>
                 <button class="action-button timeline" onclick="viewDocumentTimeline('${d.id}')" title="Document Timeline"><i class="fas fa-history"></i></button>
+                ${getFinalizeActionHtml(d, true)}
                 <button class="action-button archive" onclick="archiveDocumentConfirm('${d.id}', '${d.type}')" ${(d.status === 'Archived' || d.status === 'Rejected') ? 'disabled' : ''} title="Archive Document"><i class="fas fa-archive"></i></button>
               </div>
             </div>`;
@@ -8932,6 +8991,7 @@ $connection->close();
             <div style="display:flex;gap:8px;justify-content:flex-end;padding-top:8px;border-top:1px solid var(--border);">
               <button class="action-button info" onclick="viewDocumentInfo('${d.id}')" title="Document Info"><i class="fas fa-info-circle"></i></button>
               <button class="action-button timeline" onclick="viewDocumentTimeline('${d.id}')" title="Document Timeline"><i class="fas fa-history"></i></button>
+              ${getFinalizeActionHtml(d, true)}
               <button class="action-button archive" onclick="archiveDocumentConfirm('${d.id}', '${d.type}')" ${(d.status === 'Archived' || d.status === 'Rejected') ? 'disabled' : ''} title="Archive Document"><i class="fas fa-archive"></i></button>
             </div>`;
           docGridView.appendChild(card);
@@ -11378,6 +11438,7 @@ $connection->close();
       // Uses ETag conditional requests to skip redundant payloads (304 Not Modified)
       window.__trackingEtag = null;
       async function loadTrackingFromServer() {
+        if (isServerSideMode) return;
         try {
           const url = `tracking.php?action=tracking_latest&limit=200`;
           const headers = {};
@@ -11506,8 +11567,10 @@ $connection->close();
       }
 
       // Run once immediately, then every 10 seconds (paused when tab hidden)
-      loadTrackingFromServer();
-      setInterval(() => { if (!document.hidden) loadTrackingFromServer(); }, 10000);
+      if (!isServerSideMode) {
+        loadTrackingFromServer();
+        setInterval(() => { if (!document.hidden) loadTrackingFromServer(); }, 10000);
+      }
 
       // Recompute time-in-dept once a minute (paused when tab hidden)
       refreshTimeInDeptEveryMinute();
@@ -11522,7 +11585,9 @@ $connection->close();
       // Resume data refresh immediately when tab becomes visible
       document.addEventListener('visibilitychange', () => {
         if (!document.hidden) {
-          loadTrackingFromServer();
+          if (!isServerSideMode) {
+            loadTrackingFromServer();
+          }
           loadNotificationsFromServer();
         }
       });

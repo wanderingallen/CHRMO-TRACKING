@@ -19,6 +19,9 @@ if (isset($_SESSION['user_role']) && in_array(strtolower(trim($_SESSION['user_ro
 }
 if (!$__ssIsAdmin && !empty($_SESSION['user_department'])) {
     $__ssDept = strtoupper(trim($_SESSION['user_department']));
+    if ($__ssDept === 'ACCOUNT') {
+        $__ssDept = 'ACCOUNTING';
+    }
 }
 
 // ── File-based cache (15-second TTL) — keyed per department ──
@@ -53,12 +56,25 @@ if ($connection->connect_error) {
   exit();
 }
 
+$__ssHasDeptArchives = false;
+if ($chkDa = @$connection->query("SHOW TABLES LIKE 'department_archives'")) {
+    $__ssHasDeptArchives = ($chkDa->num_rows > 0);
+    $chkDa->free();
+}
+
 // Total documents (department-scoped for non-admin users)
 $total = 0;
 if (!$__ssIsAdmin && $__ssDept !== '') {
-    $sqlT = "SELECT COUNT(*) AS c FROM tracking WHERE (UPPER(TRIM(department)) = ? OR UPPER(TRIM(current_holder)) = ? OR UPPER(TRIM(end_location)) = ? OR (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, ' ', ''))) > 0 AND CAST(COALESCE(route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, ' ', ''))) - 1)))";
+    $sqlT = "SELECT COUNT(*) AS c FROM tracking WHERE UPPER(TRIM(COALESCE(status,''))) <> 'ARCHIVED' AND (UPPER(TRIM(department)) = ? OR UPPER(TRIM(current_holder)) = ? OR UPPER(TRIM(end_location)) = ? OR (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, ' ', ''))) > 0 AND CAST(COALESCE(route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, ' ', ''))) - 1)))";
+    if ($__ssHasDeptArchives) {
+        $sqlT .= " AND NOT EXISTS (SELECT 1 FROM department_archives da WHERE da.tracking_id = tracking.id AND UPPER(TRIM(da.department)) = ?)";
+    }
     if ($stmtT = $connection->prepare($sqlT)) {
-        $stmtT->bind_param('sssss', $__ssDept, $__ssDept, $__ssDept, $__ssDept, $__ssDept);
+        if ($__ssHasDeptArchives) {
+            $stmtT->bind_param('ssssss', $__ssDept, $__ssDept, $__ssDept, $__ssDept, $__ssDept, $__ssDept);
+        } else {
+            $stmtT->bind_param('sssss', $__ssDept, $__ssDept, $__ssDept, $__ssDept, $__ssDept);
+        }
         if ($stmtT->execute()) {
             $resT = $stmtT->get_result();
             if ($rowT = $resT->fetch_assoc()) { $total = (int)$rowT['c']; }
@@ -67,7 +83,7 @@ if (!$__ssIsAdmin && $__ssDept !== '') {
         $stmtT->close();
     }
 } else {
-    if ($res = $connection->query("SELECT COUNT(*) AS c FROM tracking")) {
+    if ($res = $connection->query("SELECT COUNT(*) AS c FROM tracking WHERE UPPER(TRIM(COALESCE(status,''))) <> 'ARCHIVED'")) {
         if ($row = $res->fetch_assoc()) { $total = (int)$row['c']; }
         $res->free();
     }
