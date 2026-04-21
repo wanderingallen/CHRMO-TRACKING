@@ -262,11 +262,18 @@ Uint8List _applyDocumentFilterIsolate(Map<String, dynamic> args) {
   if (decodedRaw == null) return bytes;
   img.Image image = img.bakeOrientation(decodedRaw);
 
-  // Always work in RGB8 for predictable pixel ops.
-  image = img.copyResize(image,
-      width: image.width,
-      height: image.height,
-      interpolation: img.Interpolation.linear);
+  // Downscale large images before expensive pixel ops for faster OCR preprocessing.
+  final maxDimension = filterName == 'enhance' ? 1800 : 2200;
+  final longest = max(image.width, image.height);
+  if (longest > maxDimension) {
+    final scale = maxDimension / longest;
+    image = img.copyResize(
+      image,
+      width: (image.width * scale).round().clamp(1, image.width),
+      height: (image.height * scale).round().clamp(1, image.height),
+      interpolation: img.Interpolation.linear,
+    );
+  }
 
   switch (filterName) {
     case 'grayscale':
@@ -392,7 +399,7 @@ Uint8List _applyDocumentFilterIsolate(Map<String, dynamic> args) {
       break;
   }
 
-  return Uint8List.fromList(img.encodeJpg(image, quality: 98));
+  return Uint8List.fromList(img.encodeJpg(image, quality: 90));
 }
 
 String _generateMobileTimestamp() {
@@ -461,6 +468,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   // Google ML Kit enhanced features
   bool _useEnhancedTextRecognition = true;
+  TextRecognizer? _ocrRecognizer;
   final List<String> _documentTypes = [];
   double _documentConfidence = 0.0;
 
@@ -1158,6 +1166,11 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     debugPrint('✅ Google ML Kit enhanced text recognition initialized');
   }
 
+  TextRecognizer _getOrCreateTextRecognizer() {
+    return _ocrRecognizer ??=
+        TextRecognizer(script: TextRecognitionScript.latin);
+  }
+
   // CamScanner-like workflow methods
   Future<void> _captureDocument() async {
     try {
@@ -1826,9 +1839,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     try {
       final inputImage = InputImage.fromFilePath(imagePath);
 
-      final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
+      final recognizer = _getOrCreateTextRecognizer();
       final result = await recognizer.processImage(inputImage);
-      recognizer.close();
 
       // Calculate average confidence
       double totalConfidence = 0.0;
@@ -1874,6 +1886,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// Performs OCR on a single page and returns just the recognized text (for multi-page processing)
   /// Preprocesses the image with enhance filter for better text recognition.
   Future<String> _performOcrOnPage(String imagePath) async {
+    String? tempOcrImagePath;
     try {
       // Preprocess image for better OCR: apply enhance filter in isolate
       String ocrImagePath = imagePath;
@@ -1890,40 +1903,36 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             dirPath, 'OCR_${DateTime.now().millisecondsSinceEpoch}.jpg');
         await File(tempPath).writeAsBytes(enhancedBytes);
         ocrImagePath = tempPath;
+        tempOcrImagePath = tempPath;
       } catch (e) {
         debugPrint('[OCR] Image preprocessing failed, using original: $e');
       }
 
       final inputImage = InputImage.fromFilePath(ocrImagePath);
-      final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
+      final recognizer = _getOrCreateTextRecognizer();
       final result = await recognizer.processImage(inputImage);
-      recognizer.close();
 
       // If preprocessed image yielded poor results, retry with original
       if (result.text.trim().length < 10 && ocrImagePath != imagePath) {
         debugPrint(
             '[OCR] Enhanced image yielded poor results, retrying with original...');
         final origInput = InputImage.fromFilePath(imagePath);
-        final origRecognizer =
-            TextRecognizer(script: TextRecognitionScript.latin);
-        final origResult = await origRecognizer.processImage(origInput);
-        origRecognizer.close();
+        final origResult = await recognizer.processImage(origInput);
         if (origResult.text.trim().length > result.text.trim().length) {
           return _buildCleanedOcrText(origResult);
         }
-      }
-
-      // Clean up temp file
-      if (ocrImagePath != imagePath) {
-        try {
-          await File(ocrImagePath).delete();
-        } catch (_) {}
       }
 
       return _buildCleanedOcrText(result);
     } catch (e) {
       debugPrint('OCR error on page $imagePath: $e');
       return '[OCR failed]';
+    } finally {
+      if (tempOcrImagePath != null) {
+        try {
+          await File(tempOcrImagePath).delete();
+        } catch (_) {}
+      }
     }
   }
 
@@ -8167,6 +8176,10 @@ ${DateTime.now().toString()}
 
     // Clean up batch processor temp files
     _batchProcessor.clearTemporaryFiles();
+
+    // Clean up OCR recognizer
+    _ocrRecognizer?.close();
+    _ocrRecognizer = null;
 
     debugPrint('✅ Camera page resources disposed');
     super.dispose();

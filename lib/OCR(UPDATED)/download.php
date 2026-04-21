@@ -90,6 +90,7 @@ $key = defined('FILE_ENC_KEY') ? FILE_ENC_KEY : '';
 $keyBin = ctype_xdigit($key) ? hex2bin($key) : (strlen($key) === 32 ? $key : hash('sha256', (string)$key, true));
 $plain = @openssl_decrypt($ciphertext, 'aes-256-gcm', $keyBin, OPENSSL_RAW_DATA, $iv, $tag);
 if ($plain === false) {
+    error_log('[download.php] Decryption failed for tracking_id=' . (int)$id . ' path=' . $encPath);
     http_response_code(500);
     echo 'Decryption failed';
     exit();
@@ -108,7 +109,7 @@ if ($pos !== false && $pos + 1 < strlen($base)) {
 // Try to infer a sensible Content-Type from the download name
 $ext = strtolower(pathinfo($downloadName, PATHINFO_EXTENSION));
 $mime = 'application/octet-stream';
-if (in_array($ext, ['jpg','jpeg','png','gif','bmp'], true)) {
+if (in_array($ext, ['jpg','jpeg','png','gif','bmp','webp'], true)) {
     $mime = 'image/' . ($ext === 'jpg' ? 'jpeg' : $ext);
 } elseif ($ext === 'pdf') {
     $mime = 'application/pdf';

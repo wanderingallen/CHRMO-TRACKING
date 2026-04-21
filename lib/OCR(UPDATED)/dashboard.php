@@ -63,10 +63,37 @@ $connection->set_charset("utf8mb4");
 // Department isolation: non-admin users see only their department
 $__deptFilter = '';
 $__deptFilterArchive = '';
-if (!$__isAdmin && !empty($_SESSION['user_department'])) {
-    $__deptEsc = $connection->real_escape_string($_SESSION['user_department']);
-    $__deptFilter = " AND tracking.department = '$__deptEsc'";
-    $__deptFilterArchive = " AND archive.department = '$__deptEsc'";
+if (!$__isAdmin) {
+  $__deptRaw = (string)($_SESSION['user_department'] ?? $_SESSION['department'] ?? '');
+  $__deptEsc = $connection->real_escape_string($__deptRaw);
+  $__deptUpper = strtoupper(trim($__deptEsc));
+  $__hasRoutingQueue = false;
+  $__hasRouteStep = false;
+  if ($rqCol = @$connection->query("SHOW COLUMNS FROM tracking LIKE 'routing_queue'")) {
+    $__hasRoutingQueue = ($rqCol->num_rows > 0);
+    $rqCol->free();
+  }
+  if ($rsCol = @$connection->query("SHOW COLUMNS FROM tracking LIKE 'route_step'")) {
+    $__hasRouteStep = ($rsCol->num_rows > 0);
+    $rsCol->free();
+  }
+  if ($__deptUpper === 'ACCOUNT') {
+    $__deptUpper = 'ACCOUNTING';
+  }
+  if ($__deptUpper !== '') {
+    $__queueFilter = '';
+    if ($__hasRoutingQueue && $__hasRouteStep) {
+      $__queueFilter = " OR (FIND_IN_SET(UPPER(TRIM('$__deptUpper')), UPPER(REPLACE(tracking.routing_queue, ' ', ''))) > 0"
+        . " AND CAST(COALESCE(tracking.route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM('$__deptUpper')), UPPER(REPLACE(tracking.routing_queue, ' ', ''))) - 1))";
+    }
+    $__deptFilter = " AND ("
+      . "UPPER(TRIM(tracking.department)) = '$__deptUpper'"
+      . " OR UPPER(TRIM(tracking.current_holder)) = '$__deptUpper'"
+      . " OR UPPER(TRIM(tracking.end_location)) = '$__deptUpper'"
+      . $__queueFilter
+      . ")";
+    $__deptFilterArchive = " AND (UPPER(TRIM(archive.department)) = '$__deptUpper' OR UPPER(TRIM(archive.last_department)) = '$__deptUpper')";
+  }
 }
 
 // Aggregate all tracking statuses once for downstream metrics
@@ -117,20 +144,6 @@ if ($stmt) {
 
 $pendingDocsCount = $statusCounts['Pending'] ?? 0;
 $inReviewCount = $statusCounts['In Review'] ?? 0;
-
-// Mimic the legacy random split for Archived/Rejected rows without fetching them all
-$archivedCount = $statusCounts['Archived'] ?? 0;
-if ($archivedCount > 0) {
-    $pendingFromArchived = random_int(0, $archivedCount);
-    $pendingDocsCount += $pendingFromArchived;
-    $inReviewCount += ($archivedCount - $pendingFromArchived);
-}
-$rejectedCount = $statusCounts['Rejected'] ?? 0;
-if ($rejectedCount > 0) {
-    $pendingFromRejected = random_int(0, $rejectedCount);
-    $pendingDocsCount += $pendingFromRejected;
-    $inReviewCount += ($rejectedCount - $pendingFromRejected);
-}
 $totalPendingAndReview = $pendingDocsCount + $inReviewCount;
 
 // 3. Total Documents Archived (from archive table)
@@ -208,12 +221,6 @@ logDashboardTiming('pending documents table slice', $pendingDocsTimer);
 
 if ($result_pending_documents) {
     while ($row = $result_pending_documents->fetch_assoc()) {
-        $originalStatus = $row['status'];
-
-        if ($originalStatus === 'Archived' || $originalStatus === 'Rejected') {
-            $row['status'] = (random_int(0, 1) === 0) ? 'In Review' : 'Pending';
-        }
-
         if ($row['status'] === 'Pending' || $row['status'] === 'In Review') {
             $pendingDocuments[] = $row;
 

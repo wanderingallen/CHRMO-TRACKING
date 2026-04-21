@@ -196,7 +196,7 @@ $overdueDocuments = 0;
 $overdueSql = "SELECT COUNT(*) AS count
                FROM tracking
                WHERE COALESCE(status,'') NOT IN ('Completed','Approved','Archived')
-                 AND DATEDIFF(CURDATE(), DATE(COALESCE(created_at, date_submitted))) >= 4";
+                 AND DATEDIFF(CURDATE(), DATE(COALESCE(created_at, date_submitted))) >= 4 $__deptFilter";
 $overdueResult = $connection->query($overdueSql);
 if ($overdueResult && $row = $overdueResult->fetch_assoc()) {
     $overdueDocuments = (int)$row['count'];

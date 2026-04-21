@@ -205,6 +205,24 @@ if (!$connection || $connection->connect_error) {
 
 $__hasDeptArchives = __tracking_ensure_department_archives_table($connection);
 
+// Ensure routing-related columns exist for queue-aware visibility and progression logic.
+$__hasRoutingQueue = false;
+$__hasRouteStep = false;
+if ($rqCol = @$connection->query("SHOW COLUMNS FROM tracking LIKE 'routing_queue'")) {
+  $__hasRoutingQueue = ($rqCol->num_rows > 0);
+  $rqCol->free();
+}
+if (!$__hasRoutingQueue) {
+  @$connection->query("ALTER TABLE tracking ADD COLUMN routing_queue TEXT NULL AFTER destination");
+}
+if ($rsCol = @$connection->query("SHOW COLUMNS FROM tracking LIKE 'route_step'")) {
+  $__hasRouteStep = ($rsCol->num_rows > 0);
+  $rsCol->free();
+}
+if (!$__hasRouteStep) {
+  @$connection->query("ALTER TABLE tracking ADD COLUMN route_step INT(11) NOT NULL DEFAULT 0 AFTER routing_queue");
+}
+
 // Housekeeping: remove incomplete/dummy rows that have no file identity.
 // These rows cannot be opened/previewed and pollute search/testing.
 // Keep this narrow: only rows already at end_location='Archive'.
@@ -10540,24 +10558,8 @@ $connection->close();
 
     // Mark document as received — updates status to "In Review"
     function markDocumentReceived(docId) {
-        openConfirmModal(
-            'Confirm Receipt',
-            'Are you sure you want to mark this document as received? Status will change to "In Review".',
-            async () => {
-                try {
-                    const r = await fetch(`tracking.php?action=mark_received&id=${encodeURIComponent(docId)}`, { cache: 'no-store', credentials: 'include' });
-                    const data = await r.json();
-                    if (data && data.success) {
-                        showToast('Document marked as received (In Review)', 'success');
-                        setTimeout(() => location.reload(), 800);
-                    } else {
-                        showToast(data.error || 'Failed to mark as received', 'error');
-                    }
-                } catch (e) {
-                    showToast('Error: ' + e.message, 'error');
-                }
-            }
-        );
+      // Use the same robust receive flow used by all modern web receive buttons.
+      webReceiveDocument(docId);
     }
 
     // Open camera/file capture for final document update
@@ -11931,14 +11933,63 @@ $connection->close();
         }
 
         if (data.success) {
+          const nextStatus = (data.new_status || 'In Review').toString();
+          const nextHolder = (data.current_holder || dept || '').toString();
+
+          const syncReceiveState = (arr) => {
+            if (!Array.isArray(arr)) return false;
+            let found = false;
+            for (const item of arr) {
+              if (!item) continue;
+              if (String(item.id) === String(docId)) {
+                item.status = nextStatus;
+                if (nextHolder) item.current_holder = nextHolder;
+                found = true;
+              }
+            }
+            return found;
+          };
+
+          // Keep all known in-memory sources in sync so re-rendering doesn't restore stale Pending rows.
+          const docPools = [documents, window.documents, window.trackingDocuments];
+          const seen = new Set();
+          for (const pool of docPools) {
+            if (!pool || seen.has(pool)) continue;
+            seen.add(pool);
+            syncReceiveState(pool);
+          }
+
           // Update row status badge
           const row = document.querySelector(`tr[data-id="${docId}"]`);
           if (row) {
             const statusCell = row.querySelector('.status-pill, [class*="status"]');
-            if (statusCell) { statusCell.textContent = data.new_status || 'In Review'; statusCell.className = 'status-pill status-in-review'; }
-            row.setAttribute('data-status', data.new_status || 'In Review');
+            if (statusCell) { statusCell.textContent = nextStatus; statusCell.className = 'status-pill status-in-review'; }
+            row.setAttribute('data-status', nextStatus);
           }
           showToast('Document marked as Received successfully.', 'success');
+
+          // If user is currently filtered to Pending, move filter to In Review so
+          // the just-received document doesn't appear to disappear.
+          const selectedStatusEl = document.querySelector('#statusDropdown .filter-dropdown-item.selected');
+          const selectedStatus = (selectedStatusEl?.dataset?.value || 'All Statuses').toString();
+          if (selectedStatus === 'Pending' && nextStatus.toLowerCase() === 'in review') {
+            const statusDropdown = document.getElementById('statusDropdown');
+            const inReviewEl = statusDropdown?.querySelector('.filter-dropdown-item[data-value="In Review"]');
+            if (statusDropdown && inReviewEl) {
+              statusDropdown.querySelectorAll('.filter-dropdown-item').forEach(el => {
+                el.classList.remove('selected');
+                el.querySelectorAll('.check-icon').forEach(icon => icon.remove());
+              });
+              inReviewEl.classList.add('selected');
+              const check = document.createElement('i');
+              check.className = 'fas fa-check check-icon';
+              inReviewEl.appendChild(check);
+              const statusBtnLabel = document.getElementById('statusFilterBtn')?.querySelector('span');
+              if (statusBtnLabel) statusBtnLabel.textContent = 'In Review';
+              if (typeof window.updateActiveFiltersCount === 'function') window.updateActiveFiltersCount();
+              if (typeof window.renderFilterChips === 'function') window.renderFilterChips();
+            }
+          }
 
           try {
             const latest = await fetchDocDetail(docId);
@@ -11951,8 +12002,13 @@ $connection->close();
             }
           } catch (_) {}
 
-          // Refresh the table
-          if (typeof window.applyFiltersAndSearch === 'function') window.applyFiltersAndSearch();
+          // Re-render from synced in-memory state (client mode) or refresh server page snapshot (server mode).
+          if (pageInfoSpan && pageInfoSpan.dataset.serverside === '1') {
+            if (typeof navigateWithCurrentFilters === 'function') navigateWithCurrentFilters(true);
+            else window.location.reload();
+          } else if (typeof window.applyFiltersAndSearch === 'function') {
+            window.applyFiltersAndSearch();
+          }
         } else {
           showToast((data.error || 'Failed to receive'), 'error');
         }

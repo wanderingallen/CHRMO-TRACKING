@@ -2939,6 +2939,13 @@ class _DashboardPageState extends State<DashboardPage>
     var effectiveType = type.trim();
     var effectiveEndLocation = endLocation.trim();
     final nextDeptUpper = nextDepartment.trim().toUpperCase();
+    bool routingSnackShown = false;
+    void hideRoutingSnack() {
+      if (!mounted || !routingSnackShown) return;
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      routingSnackShown = false;
+    }
+
     try {
       final root = await _getServerRoot();
       if (root == null) return;
@@ -3087,10 +3094,33 @@ class _DashboardPageState extends State<DashboardPage>
       if (tid.isNotEmpty) {
         payload['tracking_id'] = tid;
       }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            duration: Duration(minutes: 2),
+            content: Row(
+              children: [
+                SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                SizedBox(width: 12),
+                Expanded(child: Text('Routing document...')),
+              ],
+            ),
+          ),
+        );
+        routingSnackShown = true;
+      }
+
       final r = await http
           .post(uri, body: payload)
           .timeout(const Duration(seconds: 12));
       if (mounted) {
+        hideRoutingSnack();
         // Check if server returned PHP source code (indicates server misconfiguration)
         if (r.body.contains('<?php') ||
             (r.body.contains('function ') && r.body.contains('\$'))) {
@@ -3126,7 +3156,7 @@ class _DashboardPageState extends State<DashboardPage>
           if (notifId != null && notifId > 0) {
             // Best-effort: mark as routed then delete the notification so it no longer shows.
             try {
-              await _updateNotificationStatus(notifId, 'routed');
+              await _updateNotificationStatus(notifId, 'routed', silent: true);
             } catch (_) {}
             try {
               await _deleteNotificationById(notifId);
@@ -3185,10 +3215,11 @@ class _DashboardPageState extends State<DashboardPage>
       }
 
       if (recoveredAsSuccess) {
+        hideRoutingSnack();
         final int? notifId = activityId;
         if (notifId != null && notifId > 0) {
           try {
-            await _updateNotificationStatus(notifId, 'routed');
+            await _updateNotificationStatus(notifId, 'routed', silent: true);
           } catch (_) {}
           try {
             await _deleteNotificationById(notifId);
@@ -3217,6 +3248,7 @@ class _DashboardPageState extends State<DashboardPage>
       }
 
       if (mounted) {
+        hideRoutingSnack();
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('Network error: $e')));
       }
@@ -9046,7 +9078,8 @@ class _DashboardPageState extends State<DashboardPage>
     );
   }
 
-  Future<void> _updateNotificationStatus(int id, String status) async {
+  Future<void> _updateNotificationStatus(int id, String status,
+      {bool silent = false}) async {
     try {
       final root = await _getServerRoot();
       if (root == null) return;
@@ -9059,18 +9092,20 @@ class _DashboardPageState extends State<DashboardPage>
       final r = await http.post(uri).timeout(const Duration(seconds: 8));
       if (r.statusCode < 400) {
         if (mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('Updated: $status')));
+          if (!silent) {
+            ScaffoldMessenger.of(context)
+                .showSnackBar(SnackBar(content: Text('Updated: $status')));
+          }
           await _fetchRecentActivity();
         }
       } else {
-        if (mounted) {
+        if (mounted && !silent) {
           ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text('Update failed (${r.statusCode})')));
         }
       }
     } catch (e) {
-      if (mounted) {
+      if (mounted && !silent) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('Network error: $e')));
       }
@@ -9347,7 +9382,8 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
     }
   }
 
-  Future<void> _updateNotificationStatus(int id, String status) async {
+  Future<void> _updateNotificationStatus(int id, String status,
+      {bool silent = false}) async {
     try {
       final root = await _getServerRoot();
       if (root == null) return;
@@ -9595,6 +9631,13 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
     String? trackingId,
     int? activityId,
   }) async {
+    bool routingSnackShown = false;
+    void hideRoutingSnack() {
+      if (!mounted || !routingSnackShown) return;
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+      routingSnackShown = false;
+    }
+
     try {
       final root = await _getServerRoot();
       if (root == null) return;
@@ -9648,10 +9691,33 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
       if (trackingId?.trim().isNotEmpty ?? false) {
         payload['tracking_id'] = trackingId!.trim();
       }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            duration: Duration(minutes: 2),
+            content: Row(
+              children: [
+                SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                SizedBox(width: 12),
+                Expanded(child: Text('Routing document...')),
+              ],
+            ),
+          ),
+        );
+        routingSnackShown = true;
+      }
+
       final r = await http
           .post(uri, body: payload)
           .timeout(const Duration(seconds: 12));
       if (mounted) {
+        hideRoutingSnack();
         // Check if server returned PHP source code (indicates server misconfiguration)
         if (r.body.contains('<?php') ||
             (r.body.contains('function ') && r.body.contains('\$'))) {
@@ -9685,7 +9751,7 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
           final int? notifId = activityId;
           if (notifId != null && notifId > 0) {
             try {
-              await _updateNotificationStatus(notifId, 'routed');
+              await _updateNotificationStatus(notifId, 'routed', silent: true);
             } catch (_) {}
             try {
               await _deleteNotificationById(notifId);
@@ -9701,6 +9767,7 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
       }
     } catch (e) {
       if (mounted) {
+        hideRoutingSnack();
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('Network error: $e')));
       }
