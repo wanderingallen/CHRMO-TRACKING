@@ -1,71 +1,47 @@
 <?php
 /**
  * Configuration file for CHRMO Document Tracking System
- * 
- * For production: create a .env file in this directory with your real values.
- * See .env.example for the template.
- * DO NOT commit this file or .env with real credentials to version control.
+ * DO NOT commit this file with real credentials to version control
  */
 
-// ──── Load .env overrides (if present) ────
-$__envFile = __DIR__ . '/.env';
-if (file_exists($__envFile)) {
-    $__envLines = file($__envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-    foreach ($__envLines as $__line) {
-        $__line = trim($__line);
-        if ($__line === '' || $__line[0] === '#') continue;
-        if (strpos($__line, '=') === false) continue;
-        list($__key, $__val) = array_map('trim', explode('=', $__line, 2));
-        // Strip surrounding quotes
-        if (strlen($__val) >= 2 && (($__val[0] === '"' && substr($__val, -1) === '"') || ($__val[0] === "'" && substr($__val, -1) === "'"))) {
-            $__val = substr($__val, 1, -1);
-        }
-        $_ENV[$__key] = $__val;
-    }
-    unset($__envLines, $__line, $__key, $__val);
-}
-unset($__envFile);
-
-// Helper: read from $_ENV or fall back to a default
-function __env(string $key, string $default = ''): string {
-    return $_ENV[$key] ?? $default;
-}
-
 // Environment (development or production)
-define('ENVIRONMENT', __env('ENVIRONMENT', 'production'));
+define('ENVIRONMENT', 'development'); // Change to 'production' for live deployment
 
-// Database Configuration
-define('DB_HOST', __env('DB_HOST', 'localhost'));
-define('DB_NAME', __env('DB_NAME', 'chrmo_db'));
-define('DB_USER', __env('DB_USER', 'root'));
-define('DB_PASS', __env('DB_PASS', ''));
+// Database Configuration (use the schema from chrmo_db.sql)
+define('DB_HOST', 'localhost');
+define('DB_NAME', 'chrmo_db');
+define('DB_USER', 'root');
+define('DB_PASS', '');
+// Optional: set this if MySQL runs on a non-default port (e.g., 3307)
 if (!defined('DB_PORT')) {
-    define('DB_PORT', (int)__env('DB_PORT', '3306'));
+    define('DB_PORT', 3306);
 }
 define('DB_CHARSET', 'utf8mb4');
 
-// Security Keys — MUST be overridden via .env in production
-define('SECRET_KEY', __env('SECRET_KEY', 'change_this_to_a_random_64_character_string_in_production_abc123'));
+// Security Keys (CHANGE THESE IN PRODUCTION!)
+define('SECRET_KEY', 'change_this_to_a_random_64_character_string_in_production_abc123');
 define('CSRF_TOKEN_NAME', 'csrf_token');
 define('CSRF_TOKEN_EXPIRY', 3600); // 1 hour
 
-// File Encryption (set secure 64-hex key via .env in production)
-define('FILE_ENC_KEY', __env('FILE_ENC_KEY', '0000000000000000000000000000000000000000000000000000000000000000'));
+// File Encryption (set secure key in production; 64-hex preferred)
+// If FILE_ENC_KEY is 64-hex, it will be used as-is; otherwise a SHA-256 of the value is used
+define('FILE_ENC_KEY', '0000000000000000000000000000000000000000000000000000000000000000');
 define('FILE_ENC_ALGO', 'aes-256-gcm');
 
-// RBAC fallback (false in production — roles must be properly assigned)
-define('ALLOW_ADMIN_FALLBACK', __env('ALLOW_ADMIN_FALLBACK', 'false') === 'true');
-define('ADMIN_EMAILS', __env('ADMIN_EMAILS', ''));
+// RBAC fallback: allow admin pages if role not set (set to false in production once roles are configured)
+define('ALLOW_ADMIN_FALLBACK', true);
+// Comma-separated list of admin emails allowed during fallback (optional)
+define('ADMIN_EMAILS', '');
 
-// Email / SMTP Configuration
-define('SMTP_HOST', __env('SMTP_HOST', 'smtp.gmail.com'));
-define('SMTP_PORT', (int)__env('SMTP_PORT', '587'));
-define('SMTP_USERNAME', __env('SMTP_USERNAME', ''));
-define('SMTP_PASSWORD', __env('SMTP_PASSWORD', ''));
-define('SMTP_FROM_EMAIL', __env('SMTP_FROM_EMAIL', ''));
-define('SMTP_FROM_NAME', __env('SMTP_FROM_NAME', 'CHRMO Document Tracking'));
-define('SMTP_ENCRYPTION', __env('SMTP_ENCRYPTION', 'tls'));
-define('SMTP_AUTH', true);
+// Email Configuration (for production)
+define('SMTP_HOST', 'smtp.gmail.com');
+define('SMTP_PORT', 587);               // 587 = STARTTLS, 465 = SMTPS
+define('SMTP_USERNAME', 'saquinalemcris@gmail.com');
+define('SMTP_PASSWORD', 'qcrs cdvs civb bgrf'); // Gmail App Password
+define('SMTP_FROM_EMAIL', 'saquinalemcris16@gmail.com'); // Use Gmail to avoid SPF issues
+define('SMTP_FROM_NAME', 'CHRMO Document Tracking');
+define('SMTP_ENCRYPTION', 'tls');       // 'tls' for STARTTLS, 'ssl' for port 465
+define('SMTP_AUTH', true);              // keep true for Gmail
 
 // Application URLs
 // Derive base URL from the current request host to avoid hard-coded LAN IPs.

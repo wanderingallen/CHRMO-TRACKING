@@ -59,7 +59,7 @@ class Security {
         
         // Clean old entries
         $cutoff = time() - $window;
-        $db->prepare("DELETE FROM rate_limits WHERE window_start < ?")->execute([$cutoff]);
+        $db->prepare("DELETE FROM rate_limits WHERE window_start < FROM_UNIXTIME(?)")->execute([$cutoff]);
 
         // Check current attempts
         $stmt = $db->prepare("
@@ -67,7 +67,7 @@ class Security {
             FROM rate_limits
             WHERE identifier = ? AND action = ? AND window_start >= ?
         ");
-        $stmt->execute([$identifier, $action, $cutoff]);
+        $stmt->execute([$identifier, $action, date('Y-m-d H:i:s', $cutoff)]);
         $result = $stmt->fetch();
         $total = $result['total'] ?? 0;
 
@@ -83,7 +83,7 @@ class Security {
         // Record this attempt
         $stmt = $db->prepare("
             INSERT INTO rate_limits (identifier, action, window_start)
-            VALUES (?, ?, ?)
+            VALUES (?, ?, FROM_UNIXTIME(?))
         ");
         $stmt->execute([$identifier, $action, time()]);
 

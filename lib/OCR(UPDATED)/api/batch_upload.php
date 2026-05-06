@@ -20,6 +20,7 @@ require_once __DIR__ . '/../db_connect.php';
 require_once __DIR__ . '/file_crypto.php';
 require_once __DIR__ . '/archive_storage.php';
 require_once __DIR__ . '/ocr_search_helper.php';
+require_once __DIR__ . '/../firestore_client.php';
 
 // Max batch size to prevent memory issues
 define('MAX_BATCH_SIZE', 20);
@@ -273,6 +274,34 @@ function handle_batch_upload($conn, $batch_id, $sender_name, $sender_department,
         // Log to document_history
         log_document_action($conn, $tracking_id, 'create', $sender_name, 
                            null, 'Pending', null, $current_holder);
+        
+        // ✅ CRITICAL: Sync document to Firestore immediately after insert
+        if (function_exists('firestore_upsert_tracking')) {
+            try {
+                $syncSuccess = firestore_upsert_tracking((string)$tracking_id, [
+                    'id' => (string)$tracking_id,
+                    'type' => $document_type,
+                    'employee_name' => $sender_name,
+                    'department' => $sender_department,
+                    'current_holder' => $current_holder,
+                    'end_location' => $end_location,
+                    'status' => 'Pending',
+                    'file_path' => $final_path,
+                    'file_type_icon' => $file_type_icon,
+                    'doc_hash' => $doc_hash,
+                    'mobile_timestamp' => $mobile_timestamp,
+                    'ocr_content' => $ocr_content,
+                    'date_submitted' => $date_submitted,
+                    'created_at' => date('c'),
+                    'batch_id' => $batch_id,
+                ]);
+                if (!$syncSuccess) {
+                    error_log('[batch_upload] Firestore sync failed for tracking_id=' . $tracking_id);
+                }
+            } catch (Throwable $t) {
+                error_log('[batch_upload] Firestore sync exception: ' . $t->getMessage());
+            }
+        }
         
         // Store per-page OCR in ocr_pages table for smart search
         if (isset($ocr_pages_data[$i]) && is_array($ocr_pages_data[$i])) {

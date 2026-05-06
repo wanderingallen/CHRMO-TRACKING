@@ -187,6 +187,14 @@ try {
             handle_get_final_state($conn);
             break;
             
+        case 'list_archived':
+            handle_list_archived($conn);
+            break;
+            
+        case 'restore':
+            handle_restore($conn);
+            break;
+            
         default:
             json_error('Unknown action: ' . $action);
     }
@@ -347,7 +355,7 @@ function archive_document($conn, $doc, $integrity_hash, $parent_archive_id = nul
     }
     
     $stmt->bind_param(
-        'ssssssssis',
+        'sssssssiiss',
         $document_name,
         $department,
         $type,
@@ -581,4 +589,95 @@ function handle_get_final_state($conn) {
         'history' => $history,
         'ready_for_archive' => ($doc['status'] === 'Completed' || $doc['status'] === 'Pending'),
     ]);
+}
+
+/**
+ * List archived documents for mobile client
+ */
+function handle_list_archived($conn) {
+    $dept = $_REQUEST['department'] ?? '';
+    $limit = (int)($_REQUEST['limit'] ?? 50);
+    
+    $sql = "SELECT id, document_name as name, department, type, status, date_archived as date, size, file_type_icon as fileType 
+            FROM archive 
+            WHERE status = 'Archived'";
+            
+    if ($dept !== '') {
+        $sql .= " AND (UPPER(department) = '" . $conn->real_escape_string(strtoupper($dept)) . "' 
+                  OR UPPER(archived_by_department) = '" . $conn->real_escape_string(strtoupper($dept)) . "')";
+    }
+    
+    $sql .= " ORDER BY date_archived DESC LIMIT $limit";
+    
+    $result = $conn->query($sql);
+    $archived = [];
+    
+    if ($result) {
+        while ($row = $result->fetch_assoc()) {
+            $archived[] = $row;
+        }
+    }
+    
+    json_response([
+        'success' => true,
+        'archived' => $archived
+    ]);
+}
+
+/**
+ * Restore an archived document back to tracking
+ */
+function handle_restore($conn) {
+    $archive_id = (int)($_REQUEST['id'] ?? 0);
+    if ($archive_id <= 0) {
+        json_error('Archive ID is required');
+    }
+    
+    // Fetch archive record
+    $stmt = $conn->prepare("SELECT * FROM archive WHERE id = ?");
+    $stmt->bind_param('i', $archive_id);
+    $stmt->execute();
+    $res = $stmt->get_result();
+    $doc = $res->fetch_assoc();
+    $stmt->close();
+    
+    if (!$doc) {
+        json_error('Archived document not found');
+    }
+    
+    $source_tid = (int)($doc['source_tracking_id'] ?? 0);
+    
+    $conn->begin_transaction();
+    try {
+        if ($source_tid > 0) {
+            // Document still exists in tracking, just update its status
+            $upd = $conn->prepare("UPDATE tracking SET status = 'Completed', archive_verified_at = NULL WHERE id = ?");
+            $upd->bind_param('i', $source_tid);
+            $upd->execute();
+            $upd->close();
+            
+            // Log restore action
+            $hist = $conn->prepare("INSERT INTO document_history (doc_id, action, actor_user_id, from_status, to_status, to_holder) VALUES (?, 'restore', 0, 'Archived', 'Completed', 'Tracking')");
+            $hist->bind_param('i', $source_tid);
+            $hist->execute();
+            $hist->close();
+        }
+        
+        // Remove from archive table
+        $del = $conn->prepare("DELETE FROM archive WHERE id = ?");
+        $del->bind_param('i', $archive_id);
+        $del->execute();
+        $del->close();
+        
+        $conn->commit();
+        
+        json_response([
+            'success' => true,
+            'message' => 'Document restored successfully'
+        ]);
+        
+    } catch (Exception $e) {
+        $conn->rollback();
+        throw $e;
+    }
 }

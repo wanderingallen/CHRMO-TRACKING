@@ -2,7 +2,27 @@
 require_once 'security.php';
 require_once 'config.php';
 
-Security::require_login();
+// Support signed URLs for mobile (no PHP session cookie).
+// If `sig` + `exp` are provided and valid, bypass session login.
+$__idForSig = isset($_GET['id']) ? trim((string)$_GET['id']) : '';
+$__sig = isset($_GET['sig']) ? trim((string)$_GET['sig']) : '';
+$__exp = isset($_GET['exp']) ? trim((string)$_GET['exp']) : '';
+$__now = time();
+$__sigOk = false;
+if ($__idForSig !== '' && preg_match('/^\d+$/', $__idForSig) && $__sig !== '' && $__exp !== '' && preg_match('/^\d+$/', $__exp)) {
+    $expNum = (int)$__exp;
+    if ($expNum >= $__now) {
+        $payload = 'att:' . $__idForSig . ':' . $__exp;
+        $key = defined('SECRET_KEY') ? (string)SECRET_KEY : '';
+        if ($key !== '') {
+            $calc = hash_hmac('sha256', $payload, $key);
+            $__sigOk = hash_equals($calc, $__sig);
+        }
+    }
+}
+if (!$__sigOk) {
+    Security::require_login();
+}
 
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 header('Cache-Control: post-check=0, pre-check=0', false);

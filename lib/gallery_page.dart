@@ -1372,13 +1372,6 @@ class _GalleryPageState extends State<GalleryPage> {
                                 onChanged: (_) => _toggleSelect(ts),
                               ),
                             ),
-                          if (!_selectMode)
-                            _buildItemAction(
-                              icon: Icons.cloud_upload_outlined,
-                              color: _themeColor,
-                              tooltip: 'Upload to Tracking',
-                              onPressed: () => _showUploadToTrackingModal(item),
-                            ),
                           if (_selectMode) ...[
                             _buildItemAction(
                               icon: Icons.edit_outlined,

@@ -71,6 +71,7 @@ function __tracking_ensure_department_archives_table(mysqli $connection): bool {
 require_once 'settings_util.php';
 require_once 'security.php';
 require_once 'api/archive_storage.php';
+require_once 'api/file_crypto.php';
 require_once 'firestore_client.php';
 require_once 'api/ocr_search_helper.php';
 
@@ -208,19 +209,121 @@ $__hasDeptArchives = __tracking_ensure_department_archives_table($connection);
 // Ensure routing-related columns exist for queue-aware visibility and progression logic.
 $__hasRoutingQueue = false;
 $__hasRouteStep = false;
-if ($rqCol = @$connection->query("SHOW COLUMNS FROM tracking LIKE 'routing_queue'")) {
-  $__hasRoutingQueue = ($rqCol->num_rows > 0);
-  $rqCol->free();
+try {
+  // Probe table availability early (avoids fatal when table is corrupted: "doesn't exist in engine").
+  @$connection->query("SELECT 1 FROM tracking LIMIT 1");
+
+  if ($rqCol = @$connection->query("SHOW COLUMNS FROM tracking LIKE 'routing_queue'")) {
+    $__hasRoutingQueue = ($rqCol->num_rows > 0);
+    $rqCol->free();
+  }
+  if (!$__hasRoutingQueue) {
+    @$connection->query("ALTER TABLE tracking ADD COLUMN routing_queue TEXT NULL AFTER destination");
+  }
+  if ($rsCol = @$connection->query("SHOW COLUMNS FROM tracking LIKE 'route_step'")) {
+    $__hasRouteStep = ($rsCol->num_rows > 0);
+    $rsCol->free();
+  }
+  if (!$__hasRouteStep) {
+    @$connection->query("ALTER TABLE tracking ADD COLUMN route_step INT(11) NOT NULL DEFAULT 0 AFTER routing_queue");
+  }
+} catch (mysqli_sql_exception $e) {
+  http_response_code(503);
+  if (isset($__api_action) && $__api_action !== null) {
+    header('Content-Type: application/json');
+    echo json_encode([
+      'success' => false,
+      'error' => 'Tracking table unavailable',
+      'message' => 'MySQL reports the tracking table is unavailable/corrupted. Please repair or re-import the schema.',
+      'detail' => $e->getMessage(),
+    ]);
+    exit;
+  }
+
+  $safeMsg = htmlspecialchars($e->getMessage(), ENT_QUOTES);
+  echo '<!doctype html><html><head><meta charset="utf-8"><title>Tracking Table Unavailable</title>';
+  echo '<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#f8fafc;margin:0;padding:40px;color:#0f172a}';
+  echo '.card{max-width:820px;margin:0 auto;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:20px;box-shadow:0 2px 10px rgba(0,0,0,.06)}';
+  echo 'code{background:#f1f5f9;padding:2px 6px;border-radius:6px}ul{margin:10px 0 0 18px}</style>';
+  echo '</head><body><div class="card">';
+  echo '<h2 style="margin:0 0 8px 0">Tracking Table Unavailable</h2>';
+  echo '<div style="color:#475569">MySQL returned an error while accessing <code>tracking</code>.</div>';
+  echo '<div style="margin-top:10px"><code>' . $safeMsg . '</code></div>';
+  echo '<ul>';
+  echo '<li>Open phpMyAdmin and confirm the <code>tracking</code> table exists and is not corrupted.</li>';
+  echo '<li>If you recently imported the DB, re-import <code>chrmo_db.sql</code> or restore from backup.</li>';
+  echo '<li>If InnoDB is corrupted, check MySQL error log and repair/restore the table.</li>';
+  echo '</ul>';
+  echo '</div></body></html>';
+  exit;
 }
-if (!$__hasRoutingQueue) {
-  @$connection->query("ALTER TABLE tracking ADD COLUMN routing_queue TEXT NULL AFTER destination");
-}
-if ($rsCol = @$connection->query("SHOW COLUMNS FROM tracking LIKE 'route_step'")) {
-  $__hasRouteStep = ($rsCol->num_rows > 0);
-  $rsCol->free();
-}
-if (!$__hasRouteStep) {
-  @$connection->query("ALTER TABLE tracking ADD COLUMN route_step INT(11) NOT NULL DEFAULT 0 AFTER routing_queue");
+
+// SSE endpoint: stream lightweight tracking updates to browsers
+if (isset($_GET['action']) && $_GET['action'] === 'stream') {
+  // Use a simple change-detection strategy: return latest N rows and send only when changed.
+  if (session_status() === PHP_SESSION_NONE) session_start();
+  // Best-effort: disable buffering/compression so events flush immediately (common XAMPP issue).
+  @ini_set('output_buffering', 'off');
+  @ini_set('zlib.output_compression', '0');
+  if (function_exists('apache_setenv')) {
+    @apache_setenv('no-gzip', '1');
+  }
+  if (function_exists('ob_get_level')) {
+    while (ob_get_level() > 0) {
+      @ob_end_flush();
+    }
+  }
+  header('Content-Type: text/event-stream');
+  header('Cache-Control: no-cache');
+  header('Connection: keep-alive');
+  // Turn off buffering on the server/proxy where possible
+  header('X-Accel-Buffering: no');
+  @set_time_limit(0);
+
+  $lastHash = isset($_GET['hash']) ? (string)$_GET['hash'] : '';
+  $pollInterval = 2; // seconds
+  $rowLimit = 50; // how many recent rows to include
+
+  // Pre-warm by sending a comment to establish the stream
+  echo ":connected\n\n";
+  @ob_flush(); @flush();
+
+  while (!connection_aborted()) {
+    $rows = [];
+    $sql = "SELECT id,type,employee_name,department,current_holder,end_location,status,date_submitted,created_at,file_type_icon,overdue_state,overdue_label,overdue_full_label,routing_queue,route_step FROM tracking ORDER BY id DESC LIMIT " . (int)$rowLimit;
+    if ($res = $connection->query($sql)) {
+      while ($r = $res->fetch_assoc()) { $rows[] = $r; }
+      $res->free();
+    }
+
+    $payload = json_encode($rows);
+    $hash = $payload === false ? '' : md5($payload);
+
+    if ($hash !== $lastHash) {
+      $data = json_encode(['hash' => $hash, 'rows' => $rows]);
+      if ($data !== false) {
+        echo "event: update\n";
+        // split long data into safe chunks if needed
+        $lines = preg_split('/\r?\n/', $data);
+        foreach ($lines as $line) {
+          echo 'data: ' . $line . "\n";
+        }
+        echo "\n";
+        @ob_flush(); @flush();
+        $lastHash = $hash;
+      }
+    } else {
+      // heartbeat comment to keep connection alive
+      echo ":heartbeat\n\n";
+      @ob_flush(); @flush();
+    }
+
+    // Sleep then loop
+    sleep((int)$pollInterval);
+  }
+
+  // Close connection gracefully
+  exit;
 }
 
 // Housekeeping: remove incomplete/dummy rows that have no file identity.
@@ -323,6 +426,57 @@ function __tracking_load_departments(mysqli $connection): array {
     }
     return $out;
 }
+
+  function __tracking_try_load_latest_extracted_ocr(mysqli $connection, array $row): ?string {
+    try {
+      $hasTable = false;
+      if ($chk = $connection->query("SHOW TABLES LIKE 'extracted_content'")) {
+        $hasTable = ($chk && $chk->num_rows > 0);
+        if ($chk) { $chk->free(); }
+      }
+      if (!$hasTable) {
+        return null;
+      }
+
+      $candidates = [];
+      $docHash = trim((string)($row['doc_hash'] ?? ''));
+      $mobileTs = trim((string)($row['mobile_timestamp'] ?? ''));
+      $docId = (int)($row['id'] ?? 0);
+      if ($docHash !== '') { $candidates[] = $docHash; }
+      if ($mobileTs !== '') { $candidates[] = $mobileTs; }
+      if ($docId > 0) {
+        $candidates[] = 'tracking:' . $docId;
+        $candidates[] = 'TRACKING_' . $docId;
+      }
+
+      foreach ($candidates as $ref) {
+        $stmt = $connection->prepare('SELECT enc_blob FROM extracted_content WHERE doc_ref = ? ORDER BY updated_at DESC LIMIT 1');
+        if (!$stmt) {
+          continue;
+        }
+        $stmt->bind_param('s', $ref);
+        if (!$stmt->execute()) {
+          $stmt->close();
+          continue;
+        }
+        $res = $stmt->get_result();
+        $found = $res ? $res->fetch_assoc() : null;
+        if ($res) { $res->free(); }
+        $stmt->close();
+
+        if ($found && isset($found['enc_blob'])) {
+          $plain = file_crypto_decrypt_blob($found['enc_blob']);
+          if ($plain !== false && trim((string)$plain) !== '') {
+            return (string)$plain;
+          }
+        }
+      }
+    } catch (Throwable $e) {
+      return null;
+    }
+
+    return null;
+  }
 
 if (isset($_GET['action']) && $_GET['action'] === 'save_ocr_correction') {
   if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
@@ -493,12 +647,18 @@ if (isset($_GET['action']) && $_GET['action'] === 'ocr_pages') {
   // Fallback: legacy single OCR content column (if present)
   if (empty($pages)) {
     try {
-      if ($stmt = $connection->prepare("SELECT ocr_content FROM tracking WHERE id = ? LIMIT 1")) {
+      if ($stmt = $connection->prepare("SELECT id, doc_hash, mobile_timestamp, ocr_content FROM tracking WHERE id = ? LIMIT 1")) {
         $stmt->bind_param('i', $docId);
         if ($stmt->execute()) {
           $res = $stmt->get_result();
           if ($res && ($row = $res->fetch_assoc())) {
             $text = trim((string)($row['ocr_content'] ?? ''));
+            if ($text === '') {
+              $latest = __tracking_try_load_latest_extracted_ocr($connection, $row);
+              if ($latest !== null) {
+                $text = trim($latest);
+              }
+            }
             if ($text !== '') {
               $pages = [[
                 'page_number' => 1,
@@ -514,6 +674,140 @@ if (isset($_GET['action']) && $_GET['action'] === 'ocr_pages') {
       }
     } catch (Throwable $t) {
       // best-effort only
+    }
+  }
+
+  if (empty($pages)) {
+    $storedPath = '';
+    try {
+      if ($stmt = $connection->prepare("SELECT file_path FROM tracking WHERE id = ? LIMIT 1")) {
+        $stmt->bind_param('i', $docId);
+        if ($stmt->execute()) {
+          $res = $stmt->get_result();
+          if ($res && ($r = $res->fetch_assoc())) {
+            $storedPath = trim((string)($r['file_path'] ?? ''));
+          }
+          if ($res) $res->free();
+        }
+        $stmt->close();
+      }
+    } catch (Throwable $t) {
+      $storedPath = '';
+    }
+
+    $resolveToDisk = function(string $p) {
+      $p = str_replace('\\', '/', $p);
+      $markers = ['lib/OCR(UPDATED)/', 'lib/uploads/'];
+      foreach ($markers as $m) {
+        $pos = strpos($p, $m);
+        if ($pos !== false) { $p = substr($p, $pos + strlen($m)); break; }
+      }
+      $p = ltrim($p, '/');
+      $roots = [__DIR__, __DIR__ . '/..', dirname(dirname(__DIR__))];
+      $docRoot = (string)($_SERVER['DOCUMENT_ROOT'] ?? '');
+      if ($docRoot !== '') {
+        $roots[] = rtrim($docRoot, '/');
+        $roots[] = rtrim($docRoot, '/') . '/flutter_application_7';
+        $roots[] = rtrim($docRoot, '/') . '/flutter_application_7/lib/OCR(UPDATED)';
+      }
+      foreach ($roots as $root) {
+        $cand = rtrim($root, '/\\') . '/' . $p;
+        if (is_file($cand)) return $cand;
+      }
+      return null;
+    };
+
+    $diskPath = $storedPath !== '' ? $resolveToDisk($storedPath) : null;
+    if ($diskPath && is_file($diskPath)) {
+      $blob = @file_get_contents($diskPath);
+      $plain = null;
+      if ($blob !== false && strlen((string)$blob) >= 4 && substr((string)$blob, 0, 4) === 'ENC1') {
+        $dec = file_crypto_decrypt_blob($blob);
+        if ($dec !== false) {
+          $plain = $dec;
+        }
+      } elseif ($blob !== false) {
+        $plain = $blob;
+      }
+
+      if ($plain !== null && $plain !== false && trim((string)$plain) !== '') {
+        $base = basename($diskPath);
+        if (substr($base, -4) === '.enc') $base = substr($base, 0, -4);
+        $ext = strtolower(pathinfo($base, PATHINFO_EXTENSION));
+        if ($ext === '') $ext = 'bin';
+
+        $tmpDir = sys_get_temp_dir();
+        $tmpFile = rtrim($tmpDir, '/\\') . DIRECTORY_SEPARATOR . 'chrmo_ocr_' . $docId . '_' . uniqid('', true) . '.' . $ext;
+        @file_put_contents($tmpFile, $plain);
+
+        $ocrText = '';
+        $run = function(string $cmd) {
+          if (!function_exists('shell_exec')) return null;
+          return shell_exec($cmd);
+        };
+
+        if ($ext === 'pdf') {
+          $outTxt = rtrim($tmpDir, '/\\') . DIRECTORY_SEPARATOR . 'chrmo_ocr_' . $docId . '_' . uniqid('', true) . '.txt';
+          $cmd = 'pdftotext -layout ' . escapeshellarg($tmpFile) . ' ' . escapeshellarg($outTxt) . ' 2>&1';
+          $run($cmd);
+          if (is_file($outTxt)) {
+            $ocrText = (string)@file_get_contents($outTxt);
+            @unlink($outTxt);
+          }
+        } elseif (in_array($ext, ['jpg','jpeg','png','gif','bmp','tif','tiff','webp'], true)) {
+          $cmd = 'tesseract ' . escapeshellarg($tmpFile) . ' stdout 2>&1';
+          $out = $run($cmd);
+          if (is_string($out)) {
+            $ocrText = $out;
+          }
+        }
+
+        @unlink($tmpFile);
+        $ocrText = trim((string)$ocrText);
+        if ($ocrText !== '') {
+          try {
+            if (function_exists('ocr_ensure_pages_table')) {
+              ocr_ensure_pages_table($connection);
+            }
+            if (function_exists('ocr_ensure_parent_ocr_columns')) {
+              ocr_ensure_parent_ocr_columns($connection);
+            }
+          } catch (Throwable $t) {
+          }
+
+          try {
+            if (function_exists('ocr_store_page')) {
+              ocr_store_page($connection, 'tracking', $docId, 1, $ocrText);
+            }
+          } catch (Throwable $t) {
+          }
+
+          $summary = '';
+          try {
+            if (function_exists('ocr_extract_keywords')) {
+              $keywords = ocr_extract_keywords($ocrText);
+              if (is_array($keywords) && !empty($keywords)) {
+                $summary = implode(' ', array_slice($keywords, 0, 50));
+              }
+            }
+          } catch (Throwable $t) {
+            $summary = '';
+          }
+
+          if ($stmt = @$connection->prepare("UPDATE tracking SET ocr_content = ?, ocr_summary = ? WHERE id = ?")) {
+            $stmt->bind_param('ssi', $ocrText, $summary, $docId);
+            @$stmt->execute();
+            $stmt->close();
+          }
+
+          $pages = [[
+            'page_number' => 1,
+            'ocr_text' => $ocrText,
+            'ocr_keywords' => null,
+            'confidence_score' => null,
+          ]];
+        }
+      }
     }
   }
 
@@ -1510,7 +1804,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'tracking_latest') {
     }
 
     if ($sinceId > 0) {
-      $sql = "SELECT id,type,employee_name,department,current_holder,end_location,status,date_submitted,created_at,mobile_timestamp,file_type_icon,file_size,file_path,doc_hash,routing_queue,route_step FROM tracking WHERE id > ?" . $__latestArchiveWhere . $__latestDeptWhere . " ORDER BY id DESC LIMIT ?";
+      $sql = "SELECT id,type,employee_name,department,current_holder,end_location,status,date_submitted,created_at,mobile_timestamp,file_type_icon,file_size,file_path,doc_hash,batch_id,routing_queue,route_step FROM tracking WHERE id > ?" . $__latestArchiveWhere . $__latestDeptWhere . " ORDER BY id DESC LIMIT ?";
         if ($stmt = $connection->prepare($sql)) {
         $types = 'i' . $__latestArchiveTypes . $__latestDeptTypes . 'i';
         $params = array_merge([$sinceId], $__latestArchiveParams, $__latestDeptParams, [$limit]);
@@ -1532,7 +1826,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'tracking_latest') {
             $stmt->close();
         }
     } else {
-      $sql = "SELECT id,type,employee_name,department,current_holder,end_location,status,date_submitted,created_at,mobile_timestamp,file_type_icon,file_size,file_path,doc_hash,routing_queue,route_step FROM tracking WHERE 1=1" . $__latestArchiveWhere . $__latestDeptWhere . " ORDER BY id DESC LIMIT ?";
+      $sql = "SELECT id,type,employee_name,department,current_holder,end_location,status,date_submitted,created_at,mobile_timestamp,file_type_icon,file_size,file_path,doc_hash,batch_id,routing_queue,route_step FROM tracking WHERE 1=1" . $__latestArchiveWhere . $__latestDeptWhere . " ORDER BY id DESC LIMIT ?";
         if ($stmt = $connection->prepare($sql)) {
         $types = $__latestArchiveTypes . $__latestDeptTypes . 'i';
         $params = array_merge($__latestArchiveParams, $__latestDeptParams, [$limit]);
@@ -1856,9 +2150,12 @@ if (isset($_GET['action']) && ($_GET['action'] === 'mark_received' || $_GET['act
             $stmt->bind_param('ssssi', $target_status, $current_holder, $current_holder, $current_holder, $id);
         }
     } else {
-        $sql = "UPDATE tracking SET status = ?, current_holder = ? WHERE id = ?";
+        // Also set department = current_holder so both isolation columns stay in sync.
+        // This mirrors what route_document.php does and ensures the dept WHERE filter
+        // (department = dept OR current_holder = dept) continues to match after receive.
+        $sql = "UPDATE tracking SET status = ?, current_holder = ?, department = ? WHERE id = ?";
         if ($stmt = $connection->prepare($sql)) {
-            $stmt->bind_param('ssi', $target_status, $current_holder, $id);
+            $stmt->bind_param('sssi', $target_status, $current_holder, $current_holder, $id);
         }
     }
 
@@ -1914,15 +2211,64 @@ if (isset($_GET['action']) && ($_GET['action'] === 'mark_received' || $_GET['act
                 // best-effort
             }
             
+            // Rebuild routing_queue / route_step so dept isolation filter (tracking_latest)
+            // keeps this document visible for the receiving department after receive.
+            // This mirrors what route_document.php does via rd_rebuild_routing_queue.
+            $rq_updated = '';
+            $rs_updated = 0;
+            try {
+                $selRQ = $connection->prepare("SELECT routing_queue, route_step FROM tracking WHERE id = ? LIMIT 1");
+                if ($selRQ) {
+                    $selRQ->bind_param('i', $id);
+                    if ($selRQ->execute()) {
+                        $resRQ = $selRQ->get_result();
+                        if ($resRQ && ($rowRQ = $resRQ->fetch_assoc())) {
+                            $curRQ = trim((string)($rowRQ['routing_queue'] ?? ''));
+                            $curRS = (int)($rowRQ['route_step'] ?? 0);
+                            $parts = [];
+                            if ($curRQ !== '') {
+                                foreach (explode(',', $curRQ) as $p) {
+                                    $p = strtoupper(trim($p));
+                                    if ($p !== '') $parts[] = $p;
+                                }
+                            }
+                            $holderUp = strtoupper(trim($current_holder));
+                            if ($holderUp !== '' && !in_array($holderUp, $parts, true)) {
+                                $parts[] = $holderUp;
+                            }
+                            $rq_updated = implode(',', $parts);
+                            $idx = array_search($holderUp, $parts, true);
+                            $newStep = ($idx !== false) ? (int)$idx : max(0, count($parts) - 1);
+                            $rs_updated = max($curRS, $newStep);
+                            $updRQ = $connection->prepare("UPDATE tracking SET routing_queue = ?, route_step = GREATEST(COALESCE(route_step,0), ?) WHERE id = ?");
+                            if ($updRQ) {
+                                $updRQ->bind_param('sii', $rq_updated, $rs_updated, $id);
+                                $updRQ->execute();
+                                $updRQ->close();
+                            }
+                        }
+                    }
+                    $selRQ->close();
+                }
+            } catch (Throwable $rqErr) {
+                // best-effort only
+            }
+
             // Sync updated status to Firestore so mobile real-time listeners reflect the change
             try {
                 if (function_exists('firestore_upsert_tracking')) {
-                    firestore_upsert_tracking((string)$id, [
-                        'id' => (int)$id,
-                        'status' => (string)$target_status,
+                    $fsPayload = [
+                        'id'             => (int)$id,
+                        'status'         => (string)$target_status,
                         'current_holder' => (string)$current_holder,
-                        'updatedAt' => (int)round(microtime(true) * 1000),
-                    ]);
+                        'department'     => (string)$current_holder,
+                        'updatedAt'      => (int)round(microtime(true) * 1000),
+                    ];
+                    if ($rq_updated !== '') {
+                        $fsPayload['routing_queue'] = $rq_updated;
+                        $fsPayload['route_step']    = $rs_updated;
+                    }
+                    firestore_upsert_tracking((string)$id, $fsPayload);
                 }
                 // Also update linked notification doc_status in Firestore
                 if (function_exists('firestore_upsert_document')) {
@@ -1935,7 +2281,7 @@ if (isset($_GET['action']) && ($_GET['action'] === 'mark_received' || $_GET['act
                                 $nid = (int)$nRow['id'];
                                 firestore_upsert_document('notifications', (string)$nid, [
                                     'doc_status' => (string)$target_status,
-                                    'updatedAt' => (int)round(microtime(true) * 1000),
+                                    'updatedAt'  => (int)round(microtime(true) * 1000),
                                 ]);
                             }
                         }
@@ -1965,13 +2311,16 @@ if (isset($_GET['action']) && ($_GET['action'] === 'mark_received' || $_GET['act
 
             $resolved_id_source = ($id_param_raw > 0) ? 'id_param' : 'lookup';
             $out = [
-                'success' => true,
-                'id' => $id,
-                'affected' => $affected,
-                'prev_status' => $prev_status,
-                'new_status' => $target_status,
-                'current_holder' => $current_holder,
+                'success'         => true,
+                'id'              => $id,
+                'affected'        => $affected,
+                'prev_status'     => $prev_status,
+                'new_status'      => $target_status,
+                'current_holder'  => $current_holder,
+                'department'      => $current_holder,
                 'verified_status' => $verify_status,
+                'routing_queue'   => $rq_updated,
+                'route_step'      => $rs_updated,
             ];
             tracking_send_json($connection, $out);
             exit;
@@ -2054,6 +2403,39 @@ if (isset($_GET['action']) && $_GET['action'] === 'mark_pending') {
         if ($stmt->execute()) {
             $affected = $stmt->affected_rows;
             $stmt->close();
+
+            // Keep Firestore in sync (best-effort)
+            try {
+                if (function_exists('firestore_upsert_tracking')) {
+                    $cur = '';
+                    $dept = '';
+                    $end = '';
+                    if ($sel = $connection->prepare("SELECT current_holder, department, end_location FROM tracking WHERE id=? LIMIT 1")) {
+                        $sel->bind_param('i', $id);
+                        if ($sel->execute()) {
+                            $r = $sel->get_result();
+                            if ($r && ($row = $r->fetch_assoc())) {
+                                $cur  = (string)($row['current_holder'] ?? '');
+                                $dept = (string)($row['department'] ?? '');
+                                $end  = (string)($row['end_location'] ?? '');
+                            }
+                        }
+                        $sel->close();
+                    }
+
+                    firestore_upsert_tracking((string)$id, [
+                        'id' => (int)$id,
+                        'status' => 'Pending',
+                        'current_holder' => (string)$cur,
+                        'department' => (string)($dept !== '' ? $dept : $cur),
+                        'end_location' => (string)$end,
+                        'updatedAt' => (int)round(microtime(true) * 1000),
+                    ]);
+                }
+            } catch (Throwable $t) {
+                // best-effort only
+            }
+
             tracking_send_json($connection, ['success' => true, 'id' => $id, 'affected' => $affected]);
             exit;
         }
@@ -2079,6 +2461,39 @@ if (isset($_GET['action']) && $_GET['action'] === 'mark_completed') {
         if ($stmt->execute()) {
             $affected = $stmt->affected_rows;
             $stmt->close();
+
+            // Keep Firestore in sync (best-effort)
+            try {
+                if (function_exists('firestore_upsert_tracking')) {
+                    $cur = '';
+                    $dept = '';
+                    $end = '';
+                    if ($sel = $connection->prepare("SELECT current_holder, department, end_location FROM tracking WHERE id=? LIMIT 1")) {
+                        $sel->bind_param('i', $id);
+                        if ($sel->execute()) {
+                            $r = $sel->get_result();
+                            if ($r && ($row = $r->fetch_assoc())) {
+                                $cur  = (string)($row['current_holder'] ?? '');
+                                $dept = (string)($row['department'] ?? '');
+                                $end  = (string)($row['end_location'] ?? '');
+                            }
+                        }
+                        $sel->close();
+                    }
+
+                    firestore_upsert_tracking((string)$id, [
+                        'id' => (int)$id,
+                        'status' => 'Completed',
+                        'current_holder' => (string)$cur,
+                        'department' => (string)($dept !== '' ? $dept : $cur),
+                        'end_location' => (string)$end,
+                        'updatedAt' => (int)round(microtime(true) * 1000),
+                    ]);
+                }
+            } catch (Throwable $t) {
+                // best-effort only
+            }
+
             tracking_send_json($connection, ['success' => true, 'id' => $id, 'affected' => $affected]);
             exit;
         }
@@ -2123,6 +2538,38 @@ if (isset($_GET['action']) && $_GET['action'] === 'mark_archived') {
                 }
                 $h->execute();
                 $h->close();
+            }
+
+            // Keep Firestore in sync (best-effort)
+            try {
+                if (function_exists('firestore_upsert_tracking')) {
+                    $cur = '';
+                    $dept = '';
+                    $end = '';
+                    if ($sel = $connection->prepare("SELECT current_holder, department, end_location FROM tracking WHERE id=? LIMIT 1")) {
+                        $sel->bind_param('i', $id);
+                        if ($sel->execute()) {
+                            $r = $sel->get_result();
+                            if ($r && ($row = $r->fetch_assoc())) {
+                                $cur  = (string)($row['current_holder'] ?? '');
+                                $dept = (string)($row['department'] ?? '');
+                                $end  = (string)($row['end_location'] ?? '');
+                            }
+                        }
+                        $sel->close();
+                    }
+
+                    firestore_upsert_tracking((string)$id, [
+                        'id' => (int)$id,
+                        'status' => 'Archived',
+                        'current_holder' => (string)$cur,
+                        'department' => (string)($dept !== '' ? $dept : $cur),
+                        'end_location' => (string)$end,
+                        'updatedAt' => (int)round(microtime(true) * 1000),
+                    ]);
+                }
+            } catch (Throwable $t) {
+                // best-effort only
             }
 
             tracking_send_json($connection, ['success' => true, 'id' => $id, 'affected' => $affected]);
@@ -2574,53 +3021,6 @@ if (isset($_GET['action']) && $_GET['action'] === 'doc_detail') {
         tracking_send_json($connection, ['success' => false, 'error' => 'Invalid id']);
     }
 
-    $tryLoadLatestExtractedOcr = function($connection, array $row) {
-        try {
-            $hasTable = false;
-            if ($chk = $connection->query("SHOW TABLES LIKE 'extracted_content'")) {
-                $hasTable = ($chk->num_rows > 0);
-                $chk->free();
-            }
-            if (!$hasTable) {
-                return null;
-            }
-
-            $candidates = [];
-            $docHash = trim((string)($row['doc_hash'] ?? ''));
-            $mobileTs = trim((string)($row['mobile_timestamp'] ?? ''));
-            $docId = (int)($row['id'] ?? 0);
-            if ($docHash !== '') $candidates[] = $docHash;
-            if ($mobileTs !== '') $candidates[] = $mobileTs;
-            if ($docId > 0) {
-                $candidates[] = 'tracking:' . $docId;
-                $candidates[] = 'TRACKING_' . $docId;
-            }
-
-            foreach ($candidates as $ref) {
-                $stmt = $connection->prepare('SELECT enc_blob FROM extracted_content WHERE doc_ref = ? ORDER BY updated_at DESC LIMIT 1');
-                if (!$stmt) continue;
-                $stmt->bind_param('s', $ref);
-                if (!$stmt->execute()) {
-                    $stmt->close();
-                    continue;
-                }
-                $res = $stmt->get_result();
-                $found = $res ? $res->fetch_assoc() : null;
-                if ($res) { $res->free(); }
-                $stmt->close();
-                if ($found && isset($found['enc_blob'])) {
-                    $plain = file_crypto_decrypt_blob($found['enc_blob']);
-                    if ($plain !== false && trim((string)$plain) !== '') {
-                        return (string)$plain;
-                    }
-                }
-            }
-        } catch (Throwable $e) {
-            return null;
-        }
-        return null;
-    };
-
     $sqlDoc = "SELECT 
                   tracking.id,
                   tracking.type,
@@ -2660,7 +3060,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'doc_detail') {
                 // For Completed documents, prefer the latest secure OCR text (if available)
                 // so OCR can still be refreshed/updated after completion.
                 if (strcasecmp((string)($row['status'] ?? ''), 'Completed') === 0) {
-                    $latest = $tryLoadLatestExtractedOcr($connection, $row);
+                  $latest = __tracking_try_load_latest_extracted_ocr($connection, $row);
                     if ($latest !== null) {
                         $row['ocr_content'] = $latest;
                     }
@@ -2980,6 +3380,10 @@ if (isset($_GET['action']) && $_GET['action'] === 'ocr_search') {
                     $text2 = (string)($row2['ocr_content'] ?? '');
                     $results[] = [
                         'id' => $id2,
+                        'type' => $row2['type'] ?? 'Document',
+                        'name' => $row2['employee_name'] ?? '',
+                        'department' => $row2['department'] ?? '',
+                        'status' => $row2['status'] ?? '',
                         'matching_pages' => [1],
                         'score' => 0,
                         'confidence' => null,
@@ -3002,7 +3406,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'ocr_search') {
             if ($ftBase !== '') {
                 $ftQuery = '+' . str_replace(' ', ' +', $ftBase) . '*';
                 $stmt2 = $connection->prepare(
-                    "SELECT id, ocr_content, MATCH(ocr_content, ocr_summary) AGAINST(? IN BOOLEAN MODE) AS ft_score " .
+                    "SELECT id, type, employee_name, department, status, ocr_content, MATCH(ocr_content, ocr_summary) AGAINST(? IN BOOLEAN MODE) AS ft_score " .
                     "FROM tracking WHERE MATCH(ocr_content, ocr_summary) AGAINST(? IN BOOLEAN MODE) " .
                     "ORDER BY ft_score DESC, id DESC LIMIT ?"
                 );
@@ -3023,7 +3427,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'ocr_search') {
             $remaining = $limit - count($results);
             $like = '%' . $q . '%';
             $stmt2 = $connection->prepare(
-                "SELECT id, ocr_content FROM tracking WHERE (ocr_content LIKE ? OR ocr_summary LIKE ?) ORDER BY id DESC LIMIT ?"
+                "SELECT id, type, employee_name, department, status, ocr_content FROM tracking WHERE (ocr_content LIKE ? OR ocr_summary LIKE ?) ORDER BY id DESC LIMIT ?"
             );
             if ($stmt2) {
                 $stmt2->bind_param('ssi', $like, $like, $remaining);
@@ -3043,7 +3447,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'ocr_search') {
 
 // Get OCR pages for a document
 // Usage: tracking.php?action=ocr_pages&doc_id=123
-if (isset($_GET['action']) && $_GET['action'] === 'ocr_pages') {
+if (false && isset($_GET['action']) && $_GET['action'] === 'ocr_pages') {
     $docId = (int)($_GET['doc_id'] ?? 0);
     if ($docId <= 0) {
         tracking_send_json($connection, ['success' => false, 'error' => 'Invalid doc_id']);
@@ -3150,9 +3554,22 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_FILES['document_files'])) {
     $user_email = mysqli_real_escape_string($connection, $_POST['user_email'] ?? '');
     $batch_size = mysqli_real_escape_string($connection, $_POST['batch_size'] ?? '1');
 
+    // FIX: Read batch_id from POST so multi-page uploads are linked.
+    // Without this, merge_documents.php cannot find sibling pages.
+    $batch_id_post = trim($_POST['batch_id'] ?? '');
+    if ($batch_id_post === '') {
+        // Generate a batch_id server-side if client didn't send one
+        $batch_id_post = 'BATCH_' . round(microtime(true) * 1000) . '_' . $batch_size;
+    }
+    $batch_id_post = mysqli_real_escape_string($connection, $batch_id_post);
+
     // Ensure fixed-route columns exist for timeline placeholder rendering
     @$connection->query("ALTER TABLE tracking ADD COLUMN IF NOT EXISTS routing_queue TEXT DEFAULT NULL");
     @$connection->query("ALTER TABLE tracking ADD COLUMN IF NOT EXISTS route_step INT DEFAULT 0");
+    // Ensure multi-page linking columns exist
+    @$connection->query("ALTER TABLE tracking ADD COLUMN IF NOT EXISTS batch_id VARCHAR(255) DEFAULT NULL");
+    @$connection->query("ALTER TABLE tracking ADD COLUMN IF NOT EXISTS page_number INT DEFAULT 1");
+    @$connection->query("ALTER TABLE tracking ADD COLUMN IF NOT EXISTS parent_tracking_id INT DEFAULT NULL");
     
     // --- 2. PHP reformats the $_FILES array structure when '[]' is used.
     $file_array = $_FILES['document_files'];
@@ -3166,6 +3583,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_FILES['document_files'])) {
 
     $uploaded_successfully = 0;
     $inserted_document_ids = [];
+    // Track the first inserted ID for parent_tracking_id linkage
+    $first_inserted_id = null;
 
     // --- Pre-loop: ensure extracted_content table exists (once, not per file)
     @$connection->query("CREATE TABLE IF NOT EXISTS extracted_content (
@@ -3400,7 +3819,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_FILES['document_files'])) {
                       error_log("DB Update Error for ID {$tracking_id}, file {$file_name}: " . $stmt_upd->error);
                     }
                     $stmt_upd->close();
-                  } else {
+                   } else {
                     error_log("Failed to prepare update statement for tracking_id={$tracking_id}");
                   }
                 } else {
@@ -3412,14 +3831,27 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_FILES['document_files'])) {
                     $routeStep = ($holderIdx !== false) ? max(0, (int)$holderIdx) : 0;
                   }
 
+                  // FIX: Read per-file page_number from POST (sent by mobile client)
+                  $page_number = 1;
+                  if (isset($_POST['page_number'][$i])) {
+                    $page_number = max(1, (int)$_POST['page_number'][$i]);
+                  } elseif (isset($_POST['page_number'])) {
+                    $page_number = max(1, (int)$_POST['page_number']);
+                  } else {
+                    $page_number = $i + 1; // fallback: 1-based index
+                  }
+
+                  // FIX: Set parent_tracking_id for 2nd+ pages pointing to first page
+                  $parent_tid = ($first_inserted_id !== null) ? (int)$first_inserted_id : null;
+
                   $sql_insert = "INSERT INTO tracking 
-                     (type, employee_name, date_submitted, current_holder, end_location, status, department, file_type_icon, ocr_content, mobile_timestamp, file_size, user_email, file_path, doc_hash, routing_queue, route_step, created_at) 
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
+                     (type, employee_name, date_submitted, current_holder, end_location, status, department, file_type_icon, ocr_content, mobile_timestamp, file_size, user_email, file_path, doc_hash, routing_queue, route_step, batch_id, page_number, parent_tracking_id, created_at) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
 
                   $stmt_insert = $connection->prepare($sql_insert);
                   if ($stmt_insert) {
                     $stmt_insert->bind_param(
-                      "ssssssssssssssss",
+                      "sssssssssssssssssii",
                       $document_type,
                       $employee,
                       $date,
@@ -3435,12 +3867,20 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_FILES['document_files'])) {
                       $target_file,
                       $effective_doc_hash,
                       $routing_queue,
-                      $routeStep
+                      $routeStep,
+                      $batch_id_post,
+                      $page_number,
+                      $parent_tid
                     );
 
                     if ($stmt_insert->execute()) {
                       $inserted_id = $connection->insert_id;
                       $inserted_document_ids[] = $inserted_id;
+
+                      // Track first inserted ID so subsequent pages can reference it
+                      if ($first_inserted_id === null) {
+                        $first_inserted_id = $inserted_id;
+                      }
 
                       // Queue Firestore upsert for after the loop (avoid HTTP round-trip per file)
                       $firestore_queue[] = ['id' => (string)$inserted_id, 'data' => [
@@ -4603,13 +5043,13 @@ if (isset($_GET['archive_id'])) {
         $ah = @$connection->prepare("INSERT INTO archive_history (archive_id, action, actor_user_id, to_status, to_holder, notes, created_at) VALUES (?, 'archive', ?, 'Archived', 'Digital Archive', 'Document Archived', NOW())");
         if ($ah) { $actorInt = (int)($actor_id ?? 0); $ah->bind_param('ii', $archiveRowId, $actorInt); @$ah->execute(); $ah->close(); }
     }
-    header("Location: tracking.php?status=archived");
+    header("Location: tracking.php");
     exit();
 }
 
 // ------- Server-side pagination (5 per page) for main table -------
 $documents = [];
-$perPage = 5;
+$perPage = 20;
 $currentPage = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
 $offset = ($currentPage - 1) * $perPage;
 
@@ -4940,6 +5380,8 @@ $sqlPage = "SELECT
               tracking.file_size,
               tracking.user_email,
               tracking.file_path,
+              tracking.doc_hash,
+              tracking.batch_id,
               tracking.created_at,
               control.department AS employee_department
             FROM tracking
@@ -7600,8 +8042,8 @@ $connection->close();
                             <button class="action-button timeline" title="View Timeline" onclick="viewDocumentTimeline('<?= htmlspecialchars($doc['id']) ?>')">
                                 <i class="fas fa-history"></i> Timeline
                             </button>
-                            <button class="action-button archive" title="Archive" <?= ($status === 'Completed') ? "onclick=\"archiveDocumentConfirm('" . htmlspecialchars($doc['id']) . "', '" . htmlspecialchars($doc['type']) . "')\"" : '' ?>
-                                <?= ($status !== 'Completed') ? 'disabled' : '' ?>>
+                            <button class="action-button archive" title="Archive" onclick="archiveDocumentConfirm('<?= htmlspecialchars($doc['id']) ?>', '<?= htmlspecialchars($doc['type'] ?? 'Document') ?>')"
+                                <?= ($status === 'Archived' || $status === 'Rejected') ? 'disabled' : '' ?>>
                                 <i class="fas fa-archive"></i> Archive
                             </button>
                         </div>
@@ -7795,7 +8237,7 @@ $connection->close();
           </div>
 
           <!-- Documents & Attachments Tabbed Section -->
-          <div class="info-section" style="margin-top: 20px;">
+          <div class="info-section" style="margin-top: 20px; display:none;">
             <h5 style="margin:0 0 12px 0;"><i class="fas fa-folder-open" style="color: #0ea5e9;"></i> Documents & Attachments</h5>
             <!-- Tabs -->
             <div id="infoDocTabs" style="display:flex;gap:0;border-bottom:2px solid #e2e8f0;margin-bottom:14px;">
@@ -8041,147 +8483,247 @@ $connection->close();
     function startRealtimeTrackingListener() {
       if (!Array.isArray(window.trackingDocuments) || typeof window.applyFiltersAndSearch !== 'function') {
         console.warn('[Firestore] listener not started: globals not ready');
+        updateSyncBadge('offline', 'Waiting for page init…');
         return;
       }
 
-      console.log('[Firestore] listener started');
+      console.log('[Firestore] listener starting…');
+      updateSyncBadge('connecting', 'Connecting to Firestore…');
 
-      // Firestore listener for realtime updates.
-      // This updates the shared `trackingDocuments` array (defined in the non-module script)
-      // and then calls the existing filtering/rendering pipeline.
-      onSnapshot(collection(db, 'tracking'), (snapshot) => {
-        console.log('[Firestore] tracking changes:');
+      // ── Issue 4 FIX: Debounce doc_detail fetches to prevent fetch storms ──
+      // When 50+ documents change simultaneously, this batches all fetch calls
+      // into a single 300ms window and processes them together.
+      const _pendingDetailIds = new Set();
+      let _detailDebounceTimer = null;
+      function debouncedFetchDetail(documentId, mapped, mergeIntoArray) {
+        _pendingDetailIds.add(JSON.stringify({ documentId, mapped }));
+        if (_detailDebounceTimer) clearTimeout(_detailDebounceTimer);
+        _detailDebounceTimer = setTimeout(() => {
+          const batch = [..._pendingDetailIds].map(s => JSON.parse(s));
+          _pendingDetailIds.clear();
+          // Process max 10 at once, queue rest
+          const processBatch = (items) => {
+            if (items.length === 0) return;
+            const chunk = items.slice(0, 10);
+            const rest = items.slice(10);
+            Promise.allSettled(chunk.map(item =>
+              fetch(`tracking.php?action=doc_detail&id=${encodeURIComponent(item.documentId)}`, { cache: 'no-store' })
+                .then(r => r.json())
+                .then(payload => {
+                  if (payload && payload.success && payload.doc) {
+                    mergeIntoArray(payload.doc, item.documentId);
+                  } else {
+                    mergeIntoArray(item.mapped, item.documentId);
+                  }
+                })
+                .catch(() => mergeIntoArray(item.mapped, item.documentId))
+            )).then(() => {
+              if (rest.length > 0) setTimeout(() => processBatch(rest), 100);
+            });
+          };
+          processBatch(batch);
+        }, 300);
+      }
 
-        snapshot.docChanges().forEach((change) => {
-          const data = change.doc.data() || {};
-          const id = change.doc.id;
+      let retryCount = 0;
+      const maxRetries = 5;
+      let unsubscribe = null;
 
-          console.log(change.type.toUpperCase(), 'id =', id, 'data =', data);
+      function attachListener() {
+        try {
+          unsubscribe = onSnapshot(collection(db, 'tracking'), (snapshot) => {
+            retryCount = 0; // Reset on success
+            updateSyncBadge('connected', 'Realtime sync active');
 
-        // Ignore test / placeholder documents that don't look like real tracking rows
-        if (!data.type && !data.employee_name && !data.department) {
-          console.log('[Firestore] skipping non-tracking doc id =', id);
-          return;
-        }
+            snapshot.docChanges().forEach((change) => {
+              const data = change.doc.data() || {};
+              const id = change.doc.id;
 
-        // Department-scoped filtering: department_user only sees documents involving their department
-        // route_step gating: dept must be in routing_queue AND step >= dept's 0-based position
-        if (!window.__trackingIsAdmin && window.__trackingUserDept) {
-          const ud = normalizeDepartmentName(window.__trackingUserDept);
-          const dept = normalizeDepartmentName(data.department || '');
-          const holder = normalizeDepartmentName(data.current_holder || '');
-          const endLoc = normalizeDepartmentName(data.end_location || '');
-          // Check if dept appears in routing_queue AND route_step has reached that position
-          let inRoute = false;
-          const queue = (data.routing_queue || '');
-          if (queue) {
-            const qParts = queue.split(',').map(s => normalizeDepartmentName(s));
-            const pos = qParts.indexOf(ud); // 0-based
-            const step = parseInt(data.route_step || '0', 10);
-            inRoute = (pos >= 0 && step >= pos);
-          }
-          if (dept !== ud && holder !== ud && endLoc !== ud && !inRoute) {
-            console.log('[Firestore] dept filter: skipping doc id =', id, '(not relevant to', ud, ')');
-            return;
-          }
-        }
+              console.log('[Firestore]', change.type.toUpperCase(), 'id =', id);
 
-        // Prefer numeric tracking table id (data.id) if present so MySQL and Firestore share the same key
-        const documentId = (data.id !== undefined && data.id !== null) ? String(data.id) : String(id);
+            // Ignore test / placeholder documents that don't look like real tracking rows
+            if (!data.type && !data.employee_name && !data.department) {
+              console.log('[Firestore] skipping non-tracking doc id =', id);
+              return;
+            }
 
-        // Use the shared trackingDocuments array exposed by the main script
-          const docs = window.trackingDocuments;
-          if (!Array.isArray(docs)) {
-            return;
-          }
-
-        // Map Firestore fields into the shape used by tracking.php
-        // Prefer numeric tracking table id (data.id) if present so
-        // MySQL- and Firestore-originated rows share the same id.
-        const mapped = {
-          id: (data.id !== undefined && data.id !== null) ? data.id : id,
-          type: data.type || '',
-          employee_name: data.employee_name || '',
-          department: data.department || data.current_holder || '',
-          current_holder: data.current_holder || data.department || '',
-          end_location: data.end_location || '',
-          status: data.status || 'Pending',
-          date_submitted: data.date_submitted || '',
-          file_type_icon: data.file_type_icon || 'file',
-          mobile_timestamp: data.mobile_timestamp || null,
-          overdue_state: data.overdue_state || 'na',
-          overdue_label: data.overdue_label || '—',
-          overdue_full_label: data.overdue_full_label || '',
-          file_path: data.file_path || '',
-          ocr_content: data.ocr_content || '',
-          history: data.history || [],
-        };
-
-          const mergeIntoArray = (payload) => {
-            const docData = payload || mapped;
-            const idx = docs.findIndex(d => String(d.id) === String(documentId));
-            if (change.type === 'added') {
-              if (idx === -1) {
-                docs.push(docData);
-              } else {
-                docs[idx] = { ...docs[idx], ...docData };
+            // Department-scoped filtering: department_user only sees documents involving their department
+            // route_step gating: dept must be in routing_queue AND step >= dept's 0-based position
+            if (!window.__trackingIsAdmin && window.__trackingUserDept) {
+              const ud = normalizeDepartmentName(window.__trackingUserDept);
+              const dept = normalizeDepartmentName(data.department || '');
+              const holder = normalizeDepartmentName(data.current_holder || '');
+              const endLoc = normalizeDepartmentName(data.end_location || '');
+              // Check if dept appears in routing_queue AND route_step has reached that position
+              let inRoute = false;
+              const queue = (data.routing_queue || '');
+              if (queue) {
+                const qParts = queue.split(',').map(s => normalizeDepartmentName(s));
+                const pos = qParts.indexOf(ud); // 0-based
+                const step = parseInt(data.route_step || '0', 10);
+                inRoute = (pos >= 0 && step >= pos);
               }
-            } else if (change.type === 'modified') {
-              if (idx !== -1) {
-                docs[idx] = { ...docs[idx], ...docData };
-              }
-            } else if (change.type === 'removed') {
-              if (idx !== -1) {
-                docs.splice(idx, 1);
+              if (dept !== ud && holder !== ud && endLoc !== ud && !inRoute) {
+                return;
               }
             }
 
-            // Keep legacy alias pointing to the same array
-            window.documents = docs;
+            // Prefer numeric tracking table id (data.id) if present so MySQL and Firestore share the same key
+            const documentId = (data.id !== undefined && data.id !== null) ? String(data.id) : String(id);
 
-            // Always re-render after merge
+            // Use the shared trackingDocuments array exposed by the main script
+              const docs = window.trackingDocuments;
+              if (!Array.isArray(docs)) {
+                return;
+              }
+
+            // Map Firestore fields into the shape used by tracking.php
+            const mapped = {
+              id: (data.id !== undefined && data.id !== null) ? data.id : id,
+              type: data.type || '',
+              employee_name: data.employee_name || '',
+              department: data.department || data.current_holder || '',
+              current_holder: data.current_holder || data.department || '',
+              end_location: data.end_location || '',
+              status: data.status || 'Pending',
+              date_submitted: data.date_submitted || '',
+              file_type_icon: data.file_type_icon || 'file',
+              mobile_timestamp: data.mobile_timestamp || null,
+              overdue_state: data.overdue_state || 'na',
+              overdue_label: data.overdue_label || '—',
+              overdue_full_label: data.overdue_full_label || '',
+              file_path: data.file_path || '',
+              ocr_content: data.ocr_content || '',
+              history: data.history || [],
+              // Include routing fields so dept-isolation filter stays correct after partial Firestore updates
+              routing_queue: data.routing_queue !== undefined ? (data.routing_queue || '') : undefined,
+              route_step: data.route_step !== undefined ? data.route_step : undefined,
+            };
+
+              const mergeIntoArray = (payload, mergeDocId) => {
+                const docData = payload || mapped;
+                const useId = mergeDocId || documentId;
+                const idx = docs.findIndex(d => String(d.id) === String(useId));
+
+                // For 'modified' events from partial Firestore writes (e.g., only status+current_holder),
+                // preserve routing_queue/route_step from the existing in-memory entry so the dept
+                // isolation filter doesn't incorrectly hide the document.
+                let mergedData = docData;
+                if (change.type === 'modified' && idx !== -1) {
+                  const existing = docs[idx];
+                  mergedData = { ...docData };
+                  if (mergedData.routing_queue === undefined && existing.routing_queue !== undefined) {
+                    mergedData.routing_queue = existing.routing_queue;
+                  }
+                  if (mergedData.route_step === undefined && existing.route_step !== undefined) {
+                    mergedData.route_step = existing.route_step;
+                  }
+                }
+
+                if (change.type === 'added') {
+                  if (idx === -1) {
+                    docs.push(mergedData);
+                  } else {
+                    docs[idx] = { ...docs[idx], ...mergedData };
+                  }
+                } else if (change.type === 'modified') {
+                  if (idx !== -1) {
+                    docs[idx] = { ...docs[idx], ...mergedData };
+                  }
+                } else if (change.type === 'removed') {
+                  if (idx !== -1) {
+                    docs.splice(idx, 1);
+                  }
+                }
+
+                // Keep legacy alias pointing to the same array
+                window.documents = docs;
+
+                // Always re-render after merge
+                if (typeof window.applyFiltersAndSearch === 'function') {
+                  try {
+                    window.applyFiltersAndSearch();
+                  } catch (_) {
+                    // ignore
+                  }
+                }
+              };
+
+            // For added/modified docs, use debounced fetch to prevent fetch storms (Issue 4)
+              if (change.type === 'added' || change.type === 'modified') {
+                debouncedFetchDetail(documentId, mapped, mergeIntoArray);
+              } else {
+                // removed
+                mergeIntoArray(mapped);
+              }
+            });
+
+            console.log('[Firestore] documents length after update =', Array.isArray(window.trackingDocuments) ? window.trackingDocuments.length : 'n/a');
+
+            // Re-run existing filtering + rendering logic, if available
             if (typeof window.applyFiltersAndSearch === 'function') {
               try {
                 window.applyFiltersAndSearch();
-              } catch (_) {
-                // ignore
+              } catch (e) {
+                console.error('Error applying filters after Firestore update:', e);
               }
             }
-          };
+          }, (err) => {
+            console.error('[Firestore] onSnapshot error:', err);
+            const errMsg = err?.message || err?.code || String(err);
+            updateSyncBadge('error', 'Sync error: ' + errMsg);
 
-        // For added/modified docs, call server to enrich with overdue + file + history
-          if (change.type === 'added' || change.type === 'modified') {
-            fetch(`tracking.php?action=doc_detail&id=${encodeURIComponent(documentId)}`, { cache: 'no-store' })
-              .then(r => r.json())
-              .then(payload => {
-                if (payload && payload.success && payload.doc) {
-                  mergeIntoArray(payload.doc);
-                } else {
-                  mergeIntoArray(mapped);
-                }
-              })
-              .catch(() => {
-                mergeIntoArray(mapped);
-              });
-          } else {
-            // removed
-            mergeIntoArray(mapped);
-          }
-        });
-
-        console.log('[Firestore] documents length after update =', Array.isArray(window.trackingDocuments) ? window.trackingDocuments.length : 'n/a');
-
-        // Re-run existing filtering + rendering logic, if available
-        if (typeof window.applyFiltersAndSearch === 'function') {
-          try {
-            window.applyFiltersAndSearch();
-          } catch (e) {
-            console.error('Error applying filters after Firestore update:', e);
-          }
+            // Auto-retry with exponential backoff
+            if (retryCount < maxRetries) {
+              retryCount++;
+              const delay = Math.min(2000 * Math.pow(2, retryCount - 1), 30000);
+              console.log(`[Firestore] Retrying in ${delay}ms (attempt ${retryCount}/${maxRetries})…`);
+              updateSyncBadge('reconnecting', `Reconnecting (${retryCount}/${maxRetries})…`);
+              setTimeout(() => {
+                if (unsubscribe) { try { unsubscribe(); } catch(_) {} }
+                attachListener();
+              }, delay);
+            } else {
+              updateSyncBadge('error', 'Sync failed — check Firebase Console (rules/quotas/credentials)');
+              console.error('[Firestore] Max retries reached. Possible causes: security rules blocking reads, expired service account, or Firestore quota exceeded.');
+            }
+          });
+        } catch (initErr) {
+          console.error('[Firestore] Failed to attach listener:', initErr);
+          updateSyncBadge('error', 'Failed to start: ' + (initErr?.message || String(initErr)));
         }
-      }, (err) => {
-        console.error('[Firestore] onSnapshot error:', err);
-      });
+      }
+
+      attachListener();
+    }
+
+    // ── Sync Status Badge (Issue 2 FIX): shows Firestore connection health ──
+    function updateSyncBadge(state, message) {
+      let badge = document.getElementById('firestore-sync-badge');
+      if (!badge) {
+        badge = document.createElement('div');
+        badge.id = 'firestore-sync-badge';
+        badge.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:9999;padding:8px 16px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.15);transition:all 0.3s ease;font-family:Inter,sans-serif;max-width:350px;';
+        badge.title = 'Click to dismiss';
+        badge.addEventListener('click', () => { badge.style.display = 'none'; });
+        document.body.appendChild(badge);
+      }
+      badge.style.display = 'block';
+      const colors = {
+        connected:    { bg: '#10b981', fg: '#fff', icon: '🟢' },
+        connecting:   { bg: '#f59e0b', fg: '#fff', icon: '🟡' },
+        reconnecting: { bg: '#f59e0b', fg: '#fff', icon: '🔄' },
+        error:        { bg: '#ef4444', fg: '#fff', icon: '🔴' },
+        offline:      { bg: '#6b7280', fg: '#fff', icon: '⚪' },
+      };
+      const c = colors[state] || colors.offline;
+      badge.style.background = c.bg;
+      badge.style.color = c.fg;
+      badge.textContent = c.icon + ' ' + (message || state);
+      // Auto-hide "connected" badge after 5s (don't clutter the UI)
+      if (state === 'connected') {
+        setTimeout(() => { if (badge) badge.style.display = 'none'; }, 5000);
+      }
     }
 
     // Start after full page init
@@ -8206,6 +8748,96 @@ $connection->close();
     // Expose to other scripts (like the Firebase module) via clear globals
     window.trackingDocuments = documents;
     window.documents = documents; // legacy helpers (viewDocument, etc.) read from this
+
+    // Realtime updates via Server-Sent Events (SSE) as a fallback when Firestore isn't used.
+    (function(){
+      if (!window.EventSource) return;
+
+      // If Firestore is active and healthy, skip SSE to avoid duplicate work.
+      // If Firestore later fails (permission/network), we'll start SSE via the custom event.
+      const canStartNow = (window.__firestoreRealtimeActive === false);
+      let started = false;
+      const startSse = () => {
+        if (started) return;
+        // If Firestore is healthy, do not start SSE.
+        if (window.__firestoreRealtimeActive === true) return;
+        started = true;
+
+        let es = null;
+        let retryMs = 1000;
+        const maxRetryMs = 60000;
+        let warnedThisCycle = false;
+
+        const syncIndicator = document.getElementById('realtimeSyncIndicator');
+        const syncTime = document.getElementById('realtimeSyncTime');
+
+        const connect = () => {
+          try {
+            const params = new URLSearchParams();
+            const initialHash = '';
+            if (initialHash) params.set('hash', initialHash);
+
+            if (es) {
+              try { es.close(); } catch (_) {}
+              es = null;
+            }
+            es = new EventSource('tracking.php?action=stream&' + params.toString());
+
+            es.addEventListener('update', function(ev){
+              try {
+                const payload = JSON.parse(ev.data);
+                if (!payload || !Array.isArray(payload.rows)) return;
+                window.trackingDocuments = payload.rows.concat([]);
+                window.documents = window.trackingDocuments;
+                if (typeof window.applyFiltersAndSearch === 'function') {
+                  try { window.applyFiltersAndSearch(); } catch(e) { console.error(e); }
+                }
+                if (syncIndicator && syncTime) {
+                  syncTime.textContent = new Date().toLocaleTimeString();
+                  syncIndicator.style.display = 'block';
+                  setTimeout(()=>{ syncIndicator.style.display = 'none'; }, 3500);
+                }
+                // Reset backoff after a successful update
+                retryMs = 1000;
+                warnedThisCycle = false;
+              } catch (e) { console.error('SSE update parse error', e); }
+            });
+
+            es.addEventListener('error', function(e){
+              // EventSource auto-retries, but we want controlled backoff and no console spam.
+              try { es.close(); } catch (_) {}
+              es = null;
+
+              if (!warnedThisCycle) {
+                console.warn('SSE connection error; retrying...', e);
+                warnedThisCycle = true;
+              }
+              const wait = retryMs;
+              retryMs = Math.min(maxRetryMs, Math.floor(retryMs * 1.8));
+              setTimeout(connect, wait);
+            });
+
+            es.addEventListener('heartbeat', function(){ /* keepalive */ });
+          } catch (e) {
+            if (!warnedThisCycle) {
+              console.warn('SSE init failed; retrying...', e);
+              warnedThisCycle = true;
+            }
+            const wait = retryMs;
+            retryMs = Math.min(maxRetryMs, Math.floor(retryMs * 1.8));
+            setTimeout(connect, wait);
+          }
+        };
+
+        connect();
+      };
+
+      if (canStartNow) {
+        startSse();
+      } else {
+        window.addEventListener('realtime:fallback', () => startSse(), { once: true });
+      }
+    })();
 
     // Department scope for client-side Firestore listener filtering
     window.__trackingIsAdmin = <?php echo $__isAdmin ? 'true' : 'false'; ?>;
@@ -8483,10 +9115,22 @@ $connection->close();
     }
 
     function normalizeDepartmentName(value) {
-      const v = (value || '').toString().trim().toUpperCase();
-      if (v === 'ACCOUNT') return 'ACCOUNTING';
-      return v;
-    }
+  const v = (value || '').toString().trim().toUpperCase();
+  if (v.isEmpty) return '';
+  if (v.includes('ACCOUNTING')) return 'ACCOUNTING';
+  if (v === 'HR' || v.includes('HUMAN RESOURCE')) return 'HR';
+  if (v.includes('CBO')) return 'CBO';
+  if (v.includes('CAO')) return 'CAO';
+  if (v.includes('CTO')) return 'CTO';
+  if (v.includes('CPDO')) return 'CPDO';
+  if (v.includes('GSO')) return 'GSO';
+  if (v.includes('CACCO')) return 'CACCO';
+  if (v.includes('CADO')) return 'CADO';
+  if (v.includes('CMO')) return 'CMO';
+  // Handle legacy 'ACCOUNT' → 'ACCOUNTING' conversion
+  if (v === 'ACCOUNT') return 'ACCOUNTING';
+  return v;
+}
 
     function departmentsMatch(left, right) {
       const l = normalizeDepartmentName(left);
@@ -8539,13 +9183,26 @@ $connection->close();
     }
 
     function groupKeyForDoc(doc) {
+      // batch_id is set by the multi-upload API and is shared across all department rows
+      // from a single upload session — it is the most reliable grouping key.
+      const batchId = (doc?.batch_id || '').toString().trim();
+      if (batchId !== '' && batchId !== 'NULL' && batchId.startsWith('BATCH_')) {
+        return 'batch:' + batchId;
+      }
+      // For memo/announcement multi-send (same scan routed to multiple departments),
+      // doc_hash is stable across all created rows and is the best grouping fallback.
+      const dh = (doc?.doc_hash || '').toString().trim();
+      if (dh) {
+        return 'hash:' + dh;
+      }
+      // Fallback for legacy single-file or pre-batch uploads:
+      // doc_hash and file_path are per-row unique for multi-uploads, so
+      // do NOT use them as grouping keys when batch_id is absent — fall through
+      // to mobile_timestamp which is sometimes shared, or finally id (no grouping).
       const ds = (doc?.date_submitted || '').toString().trim();
-      const hash = (doc?.doc_hash || '').toString().trim();
-      if (hash) return 'hash:' + hash + (ds ? '|date:' + ds : '');
-      const path = (doc?.file_path || '').toString().trim();
-      if (path) return 'path:' + path + (ds ? '|date:' + ds : '');
       const mobile = (doc?.mobile_timestamp || '').toString().trim();
       if (mobile) return 'mobile:' + mobile + (ds ? '|date:' + ds : '');
+      // Last resort: individual row (no grouping)
       return 'id:' + String(doc?.id ?? '');
     }
 
@@ -8584,6 +9241,7 @@ $connection->close();
             file_type_icon: doc?.file_type_icon,
             file_path: doc?.file_path,
             doc_hash: doc?.doc_hash,
+            batch_id: doc?.batch_id,
             mobile_timestamp: doc?.mobile_timestamp,
             items: [],
           };
@@ -8684,6 +9342,10 @@ $connection->close();
               : 'Archive';
             const archiveDocId = first.id || group.id;
             const safeDisplayType = String(displayType).replace(/'/g, "\\'");
+            // For Memos with multiple departments: each dept archives their own sub-row.
+            // We disable the group-header Archive button and show a hint instead.
+            // Announcements retain group-archive (all-at-once) semantics.
+            const isMemoGroup = !isAnnouncement && items.length > 1;
             const archiveOnClick = (isAnnouncement && items.length > 1)
               ? `archiveAnnouncementGroupConfirm('${archiveDocId}', '${safeDisplayType}')`
               : `archiveDocumentConfirm('${archiveDocId}', '${safeDisplayType}')`;
@@ -8726,9 +9388,14 @@ $connection->close();
                   <button class="action-button timeline" onclick="viewDocumentTimeline('${first.id || group.id}')">
                     <i class="fas fa-history"></i> Timeline
                   </button>
-                  <button class="action-button archive" title="${archiveTitle}" onclick="${archiveOnClick}" ${archiveDisabled ? 'disabled' : ''}>
-                    <i class="fas fa-archive"></i> Archive
-                  </button>
+                  ${isMemoGroup
+                    ? `<span class="action-button" style="background:rgba(99,102,241,0.1);color:#6366f1;cursor:default;font-size:0.78rem;padding:5px 8px;" title="Expand Departments to archive your copy">
+                         <i class="fas fa-info-circle"></i> Archive via Departments ↑
+                       </span>`
+                    : `<button class="action-button archive" title="${archiveTitle}" onclick="${archiveOnClick}" ${archiveDisabled ? 'disabled' : ''}>
+                         <i class="fas fa-archive"></i> Archive
+                       </button>`
+                  }
                 </div>
               </td>
             `;
@@ -9432,33 +10099,23 @@ $connection->close();
         // Always use download.php with a cache-busting timestamp so the latest file is served
         const buildFreshMainDocUrl = () => 'download.php?id=' + encodeURIComponent(doc.id) + '&inline=1&t=' + Date.now();
 
-        // Keep the button as a download/open action — fetch live URL then open
+        // View Document button: always open compiled view so users can still view documents
+        // even when tracking.file_path is an Android cache path and attachments exist.
         infoViewDocumentBtn.onclick = async () => {
+          const compileUrl = 'merge_documents.php?tracking_id=' + encodeURIComponent(doc.id) + '&view=1&t=' + Date.now();
           try {
-            const r = await fetch('api/document_actions.php?action=get_current_doc&tracking_id=' + encodeURIComponent(doc.id) + '&_=' + Date.now(), { cache: 'no-store', credentials: 'include' });
-            const d = await r.json();
-            const liveUrl = (d && d.success && d.has_file && d.file_url) ? d.file_url : ('download.php?id=' + encodeURIComponent(doc.id) + '&inline=1&t=' + Date.now());
-            loadDocumentAttachments(doc.id, liveUrl, doc.type || 'Main Document');
-            window.open(liveUrl, '_blank');
+            const liveUrl = 'download.php?id=' + encodeURIComponent(doc.id) + '&inline=1&t=' + Date.now();
+            const finalUrl = await resolveBestDocumentViewUrl(doc.id, liveUrl);
+            try { loadDocumentAttachments(doc.id, finalUrl, doc.type || 'Main Document'); } catch (_) {}
           } catch (_) {
-            const fallback = 'download.php?id=' + encodeURIComponent(doc.id) + '&inline=1&t=' + Date.now();
-            window.open(fallback, '_blank');
           }
+          window.open(compileUrl, '_blank');
         };
 
         // Load comments
         loadDocumentComments(doc.id);
 
-        // Load attachments (main document + attachments)
-        loadDocumentAttachments(doc.id, buildFreshMainDocUrl(), doc.type || 'Main Document');
-
-        // Setup refresh attachments button
-        const infoRefreshAttachmentsBtn = document.getElementById('infoRefreshAttachmentsBtn');
-        if (infoRefreshAttachmentsBtn) {
-          infoRefreshAttachmentsBtn.onclick = () => {
-            loadDocumentAttachments(doc.id, buildFreshMainDocUrl(), doc.type || 'Main Document');
-          };
-        }
+        // Documents & Attachments UI is hidden in the Info modal.
 
         // Setup add comment button
         const infoAddCommentBtn = document.getElementById('infoAddCommentBtn');
@@ -9530,6 +10187,63 @@ $connection->close();
     document.querySelectorAll('#infoDocTabs .info-doc-tab').forEach(btn => {
       btn.addEventListener('click', () => _switchDocTab(btn.getAttribute('data-tab')));
     });
+
+    async function resolveBestDocumentViewUrl(trackingId, fallbackUrl) {
+      const liveUrl = fallbackUrl || ('download.php?id=' + encodeURIComponent(String(trackingId)) + '&inline=1&t=' + Date.now());
+      try {
+        const [curRes, verRes, attRes] = await Promise.all([
+          fetch(`api/document_actions.php?action=get_current_doc&tracking_id=${encodeURIComponent(String(trackingId))}&_=${Date.now()}`, { cache: 'no-store', credentials: 'include' }),
+          fetch(`api/document_actions.php?action=get_versions&tracking_id=${encodeURIComponent(String(trackingId))}&_=${Date.now()}`, { cache: 'no-store', credentials: 'include' }),
+          fetch(`api/document_actions.php?action=get_attachments&tracking_id=${encodeURIComponent(String(trackingId))}&_=${Date.now()}`, { cache: 'no-store', credentials: 'include' }),
+        ]);
+
+        try {
+          const d = await curRes.json();
+          if (d && d.success && d.has_file && d.file_url) {
+            return String(d.file_url);
+          }
+        } catch (_) {}
+
+        let versions = [];
+        let attachments = [];
+        try {
+          const d = await verRes.json();
+          if (d && d.success && Array.isArray(d.versions)) versions = d.versions;
+        } catch (_) {}
+        try {
+          const d = await attRes.json();
+          if (d && d.success && Array.isArray(d.attachments)) attachments = d.attachments;
+        } catch (_) {}
+
+        const pickVersion = (versions || [])
+          .filter(v => v && (v.file_url || v.file_path || v.filePath))
+          .sort((a, b) => (parseInt(b.version_number || '0', 10) - parseInt(a.version_number || '0', 10)));
+        if (pickVersion.length > 0) {
+          const v = pickVersion[0];
+          const vUrl = (v.file_url || '').toString().trim();
+          if (vUrl) return vUrl;
+          const vPath = (v.file_path || v.filePath || '').toString().trim();
+          if (vPath) return 'download.php?id=' + encodeURIComponent(String(trackingId)) + '&inline=1&path=' + encodeURIComponent(vPath) + '&t=' + Date.now();
+        }
+
+        const pickAttachment = (attachments || [])
+          .filter(a => a && (a.file_url || a.fileUrl || a.file_path || a.filePath || a.path))
+          .sort((a, b) => {
+            const ad = Date.parse(a.created_at || a.createdAt || '') || 0;
+            const bd = Date.parse(b.created_at || b.createdAt || '') || 0;
+            return bd - ad;
+          });
+        if (pickAttachment.length > 0) {
+          const a = pickAttachment[0];
+          const aUrl = (a.file_url || a.fileUrl || '').toString().trim();
+          if (aUrl) return aUrl;
+          const aPath = (a.file_path || a.filePath || a.path || '').toString().trim();
+          if (aPath) return 'download.php?id=' + encodeURIComponent(String(trackingId)) + '&inline=1&path=' + encodeURIComponent(aPath) + '&t=' + Date.now();
+        }
+      } catch (_) {
+      }
+      return liveUrl;
+    }
 
     async function loadDocumentAttachments(docId, mainUrl = '', mainLabel = 'Main Document') {
       const container = document.getElementById('infoAttachmentsContainer');
@@ -9613,16 +10327,21 @@ $connection->close();
         dlList.innerHTML = dlHtml;
       }
 
-      // Helper: normalize stored paths to a web-accessible URL
-      function toWebUrl(fileUrl, filePath) {
-        const u = (fileUrl || '').toString().trim();
-        if (u) return u;
-        const p = (filePath || '').toString().trim();
-        if (!p) return '';
-        if (p.startsWith('uploads/')) return p;
-        if (p.startsWith('/uploads/')) return '.' + p;
-        return p;
+    // Helper: normalize stored paths to a web-accessible URL
+    function toWebUrl(fileUrl, filePath, id = null) {
+      const u = (fileUrl || '').toString().trim();
+      if (u) return u;
+      const p = (filePath || '').toString().trim();
+      if (!p) return '';
+      // If we have an ID and it looks like a relative path or just a filename, 
+      // use download.php to ensure proper resolution and decryption
+      if (id) {
+        return 'download.php?id=' + encodeURIComponent(String(id)) + '&inline=1&path=' + encodeURIComponent(p);
       }
+      if (p.startsWith('uploads/')) return p;
+      if (p.startsWith('/uploads/')) return '.' + p;
+      return p;
+    }
 
       // Build a card HTML
       function buildCard(label, openUrl, by, dept, when, remarks, badgeText, badgeColor) {
@@ -9675,7 +10394,9 @@ $connection->close();
             + '<span style="font-weight:600;font-size:13px;color:#0f172a;"><i class="fas ' + typeIcon + '" style="color:' + dotColor + ';margin-right:4px;"></i>' + escapeHtml(typeLabel) + '</span>'
             + '</div>';
           if (vUrl) {
-            vHtml += '<a style="padding:5px 14px;font-size:0.75rem;text-decoration:none;background:linear-gradient(135deg,#0ea5e9 0%,#0284c7 100%);color:white;border-radius:6px;font-weight:500;" href="' + encodeURI(vUrl) + '" target="_blank"><i class="fas fa-eye"></i> View</a>';
+            // Use the version-specific URL or fallback to download.php if it's a raw path
+            const openUrl = vUrl.includes('?') ? vUrl : toWebUrl('', vUrl, docId);
+            vHtml += '<a style="padding:5px 14px;font-size:0.75rem;text-decoration:none;background:linear-gradient(135deg,#0ea5e9 0%,#0284c7 100%);color:white;border-radius:6px;font-weight:500;" href="' + encodeURI(openUrl) + '" target="_blank"><i class="fas fa-eye"></i> View</a>';
           }
           vHtml += '</div>';
           // Meta row
@@ -9704,7 +10425,7 @@ $connection->close();
           const when = (a.created_at || a.createdAt || '').toString();
           const fu = (a.file_url || a.fileUrl || '').toString();
           const label = fn || (fp ? fp.split('/').pop() : 'Attachment #' + (idx + 1));
-          const openUrl = toWebUrl(fu, fp);
+          const openUrl = toWebUrl(fu, fp, docId);
           aHtml += buildCard(label, openUrl, by, dept, when, remarks, '#' + (idx + 1), '#8b5cf6');
         });
         aHtml += '</div>';
@@ -10334,6 +11055,72 @@ $connection->close();
             timelineActivityLog.appendChild(timelineItem);
         }
 
+        // Attachments inside timeline (grouped by department/office)
+        try {
+            const attRes = await fetch(`api/document_actions.php?action=get_attachments&tracking_id=${encodeURIComponent(String(docId))}&_=${Date.now()}`, { cache: 'no-store', credentials: 'include' });
+            const attPayload = await attRes.json();
+            const attList = (attPayload && attPayload.success && Array.isArray(attPayload.attachments)) ? attPayload.attachments : [];
+            if (attList.length > 0) {
+                const byDept = new Map();
+                attList.forEach((a) => {
+                    const dept = (a.department || a.dept || '').toString().trim() || 'Unknown';
+                    const arr = byDept.get(dept) || [];
+                    arr.push(a);
+                    byDept.set(dept, arr);
+                });
+
+                Array.from(byDept.entries()).forEach(([dept, items]) => {
+                    const timelineItem = document.createElement('div');
+                    timelineItem.className = 'timeline-item-horizontal';
+
+                    let when = '';
+                    try {
+                        const first = items[0] || {};
+                        when = (first.created_at || first.createdAt || '').toString();
+                    } catch (_) {}
+
+                    let linksHtml = '<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:8px;">';
+                    items.forEach((a, idx) => {
+                        const fu = (a.file_url || a.fileUrl || '').toString().trim();
+                        const fp = (a.file_path || a.filePath || a.path || '').toString().trim();
+                        const fn = (a.file_name || a.fileName || a.name || '').toString().trim();
+                        const label = fn || (fp ? fp.split('/').pop() : ('Attachment #' + (idx + 1)));
+                        const openUrl = fu ? fu : (fp ? ('download.php?id=' + encodeURIComponent(String(docId)) + '&inline=1&path=' + encodeURIComponent(fp) + '&t=' + Date.now()) : '');
+                        if (!openUrl) return;
+                        linksHtml += '<a href="' + encodeURI(openUrl) + '" target="_blank" style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;text-decoration:none;background:#faf5ff;border:1px solid #e9d5ff;color:#5b21b6;font-size:12px;font-weight:600;">'
+                          + '<i class="fas fa-paperclip" style="font-size:12px;"></i>'
+                          + escapeHtml(label)
+                          + '</a>';
+                    });
+                    linksHtml += '</div>';
+
+                    timelineItem.innerHTML = `
+                      <!-- Left Column: Department -->
+                      <div class="timeline-dept-col">
+                        <div class="timeline-dept-badge">${escapeHtml(String(dept))}</div>
+                      </div>
+                      <!-- Center Column: Attachments -->
+                      <div class="timeline-details-col">
+                        <div class="timeline-date-time">
+                          <i class="fas fa-paperclip" style="margin-right: 6px; color: #8b5cf6;"></i>${escapeHtml(when || '')}
+                        </div>
+                        <div class="timeline-description"><strong>Attachments</strong></div>
+                        ${linksHtml}
+                      </div>
+                      <!-- Right Column: Status with Icon -->
+                      <div class="timeline-status-col">
+                        <div class="timeline-dot completed">
+                          <i class="fas fa-paperclip"></i>
+                        </div>
+                        <span class="timeline-status-pill completed">Attachments</span>
+                      </div>
+                    `;
+                    timelineActivityLog.appendChild(timelineItem);
+                });
+            }
+        } catch (_) {
+        }
+
         openModal('viewDocumentTimelineModal');
     }
 
@@ -10374,59 +11161,8 @@ $connection->close();
             // Configure View Document button; keep it visible for all docs
             detailViewDocumentBtn.style.display = 'inline-flex';
             detailViewDocumentBtn.onclick = async () => {
-                // Always use download.php with cache-busting so updated files are never stale
-                const freshDetailUrl = 'download.php?id=' + encodeURIComponent(doc.id) + '&inline=1&t=' + Date.now();
-                if (doc.file_path) {
-                    await loadDocumentPreviewInTracking(freshDetailUrl, doc);
-                    return;
-                }
-                
-                let rawPath = (doc.file_path || '').trim();
-
-                // Ignore Android local paths which are not accessible from the web
-                if (rawPath.startsWith('/data/user/')) {
-                    showToast('This document file is stored only on the mobile device and is not available on the server.', 'info');
-                    return;
-                }
-
-                if (!rawPath) {
-                    showToast('No document file is attached to this record.', 'info');
-                    return;
-                }
-
-                // If the stored path points to an encrypted archive, route through preview.php
-                // (which internally calls download.php) so the file is decrypted and scaled
-                // to fit inside the preview area.
-                if (rawPath.toLowerCase().endsWith('.enc')) {
-                    const href = 'preview.php?id=' + encodeURIComponent(doc.id);
-                    if (detailDocumentPreviewWrapper && detailDocumentPreviewFrame) {
-                        detailDocumentPreviewWrapper.style.display = 'block';
-                        detailDocumentPreviewFrame.onload = resizePreviewFrameToContent;
-                        detailDocumentPreviewFrame.src = href;
-                    } else {
-                        window.open(href, '_blank');
-                    }
-                    return;
-                }
-
-                // If rawPath is already an absolute URL, use it as-is
-                if (rawPath.startsWith('http://') || rawPath.startsWith('https://')) {
-                    await loadDocumentPreviewInTracking(rawPath, doc);
-                    return;
-                }
-
-                // Otherwise treat it as a path under the XAMPP web root.
-                // Normalize leading ./ and leading slashes.
-                rawPath = rawPath.replace(/^\.\//, '');
-
-                // If path already starts with flutter_application_7, just prefix with a single '/'
-                let webPath = rawPath;
-                if (!webPath.startsWith('flutter_application_7/')) {
-                    webPath = 'flutter_application_7/' + webPath.replace(/^\//, '');
-                }
-
-                const href = '/' + webPath;
-                await loadDocumentPreviewInTracking(href, doc);
+                const compileUrl = 'merge_documents.php?tracking_id=' + encodeURIComponent(doc.id) + '&view=1&t=' + Date.now();
+                window.open(compileUrl, '_blank');
             };
             
             // Remove mobile upload details and OCR content from the modal
@@ -10625,6 +11361,64 @@ $connection->close();
         setTimeout(() => {
             toast.remove();
         }, duration);
+    }
+
+    // --- Real-time Update Indicator ---
+    function showRealtimeUpdateIndicator() {
+        // Create or get the indicator element
+        let indicator = document.getElementById('realtime-update-indicator');
+        if (!indicator) {
+            indicator = document.createElement('div');
+            indicator.id = 'realtime-update-indicator';
+            indicator.style.cssText = `
+                position: fixed;
+                top: 70px;
+                right: 20px;
+                background: linear-gradient(135deg, #22c55e, #16a34a);
+                color: white;
+                padding: 8px 16px;
+                border-radius: 20px;
+                font-size: 12px;
+                font-weight: 600;
+                box-shadow: 0 4px 12px rgba(34, 197, 94, 0.3);
+                z-index: 9999;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                opacity: 0;
+                transform: translateY(-10px);
+                transition: all 0.3s ease;
+            `;
+            indicator.innerHTML = `
+                <span style="width:8px;height:8px;background:white;border-radius:50%;animation:pulse 1s infinite;"></span>
+                Data Updated
+            `;
+            document.body.appendChild(indicator);
+
+            // Add pulse animation
+            if (!document.getElementById('realtime-anim')) {
+                const style = document.createElement('style');
+                style.id = 'realtime-anim';
+                style.textContent = `
+                    @keyframes pulse {
+                        0%, 100% { opacity: 1; transform: scale(1); }
+                        50% { opacity: 0.5; transform: scale(0.8); }
+                    }
+                `;
+                document.head.appendChild(style);
+            }
+        }
+
+        // Show indicator
+        indicator.style.opacity = '1';
+        indicator.style.transform = 'translateY(0)';
+
+        // Hide after 2 seconds
+        clearTimeout(indicator.hideTimeout);
+        indicator.hideTimeout = setTimeout(() => {
+            indicator.style.opacity = '0';
+            indicator.style.transform = 'translateY(-10px)';
+        }, 2000);
     }
 
     // --- Custom Confirmation Modal Functions ---
@@ -11433,8 +12227,8 @@ $connection->close();
       // Load notifications on page load
       loadNotificationsFromServer();
       
-      // Auto-refresh notifications every 15 seconds (paused when tab hidden)
-      setInterval(() => { if (!document.hidden) loadNotificationsFromServer(); }, 15000);
+      // Auto-refresh notifications every 8 seconds for near real-time updates (paused when tab hidden)
+      setInterval(() => { if (!document.hidden) loadNotificationsFromServer(); }, 8000);
 
       // Auto-refresh tracking data as a fallback when Firestore realtime is blocked
       // Uses ETag conditional requests to skip redundant payloads (304 Not Modified)
@@ -11467,10 +12261,14 @@ $connection->close();
 
           // Only update UI if data changed (prevents table blinking)
           const newSig = JSON.stringify((list || []).map(r => [r.id, r.status, r.current_holder, r.end_location, Math.floor(((r.overdue_seconds || 0) / 60))]));
-          if (window.__trackingSig && window.__trackingSig === newSig) {
+          const hasChanges = !window.__trackingSig || window.__trackingSig !== newSig;
+          if (!hasChanges) {
             return;
           }
           window.__trackingSig = newSig;
+
+          // Show update indicator
+          showRealtimeUpdateIndicator();
 
           docs.splice(0, docs.length, ...list);
           window.trackingDocuments = docs;
@@ -11568,10 +12366,10 @@ $connection->close();
         }
       }
 
-      // Run once immediately, then every 10 seconds (paused when tab hidden)
+      // Run once immediately, then every 5 seconds for real-time feel (paused when tab hidden)
       if (!isServerSideMode) {
         loadTrackingFromServer();
-        setInterval(() => { if (!document.hidden) loadTrackingFromServer(); }, 10000);
+        setInterval(() => { if (!document.hidden) loadTrackingFromServer(); }, 5000);
       }
 
       // Recompute time-in-dept once a minute (paused when tab hidden)
@@ -11657,16 +12455,44 @@ $connection->close();
           ocrSearchResults.style.display = 'none';
           return;
         }
-        
+
+        if (!ocrSearchResults) return;
         ocrSearchResults.style.display = 'block';
         ocrSearchResults.innerHTML = '<div class="ocr-searching"><i class="fas fa-spinner fa-spin"></i> Searching document content...</div>';
         
         try {
-          const response = await fetch(`tracking.php?action=ocr_search&q=${encodeURIComponent(query)}&limit=10`);
-          const data = await response.json();
+          const url = new URL(window.location.href);
+          url.searchParams.set('action', 'ocr_search');
+          url.searchParams.set('q', query);
+          url.searchParams.set('limit', '10');
+
+          const response = await fetch(url.toString(), {
+            credentials: 'same-origin',
+            cache: 'no-store',
+          });
+
+          const raw = await response.text();
+          let data;
+          try {
+            data = JSON.parse(raw);
+          } catch (e) {
+            console.error('OCR search non-JSON response', {
+              status: response.status,
+              ok: response.ok,
+              redirected: response.redirected,
+              finalUrl: response.url,
+              preview: String(raw || '').slice(0, 240),
+            });
+            throw e;
+          }
+
+          if (!response.ok) {
+            console.error('OCR search HTTP error', { status: response.status, body: data });
+            ocrSearchResults.innerHTML = '<div class="ocr-no-results">Search failed. Please try again.</div>';
+            return;
+          }
           
           if (!data.success) {
-            // Keep the current list as-is on failure.
             ocrSearchResults.innerHTML = '<div class="ocr-no-results">Search failed. Please try again.</div>';
             return;
           }
@@ -11693,13 +12519,14 @@ $connection->close();
               ? `<div class="ocr-result-pages"><i class="fas fa-file-alt"></i> Found on page ${result.matching_pages.join(', ')}</div>` 
               : '';
             
+            const displayName = result.name || result.employee_name || `Document ID: ${result.id}`;
             html += `
               <div class="ocr-result-item" onclick="window.scrollToDocumentRow(${result.id}); window.hideTrackingOcrResults();">
                 <div class="ocr-result-header">
                   <span class="ocr-result-type">${escapeHtml(result.type || 'Document')}</span>
                   <span class="ocr-result-meta">${escapeHtml(result.department || '')} • ${escapeHtml(result.status || '')}</span>
                 </div>
-                <div class="ocr-result-meta">${escapeHtml(result.name || '')}</div>
+                <div class="ocr-result-meta">${escapeHtml(displayName)}</div>
                 ${snippet ? `<div class="ocr-result-snippet">${highlightedSnippet}</div>` : ''}
                 ${pagesInfo}
               </div>
@@ -11815,7 +12642,8 @@ $connection->close();
       const base = window.location.pathname.replace(/\/[^\/]*$/, '');
       return base + '/api/route_document.php';
     })();
-    const PAYROLL_FIXED_ROUTE = ['HR','CBO','ACCOUNTING','CAO','CTO'];
+    // Placeholder - will be set after ALL_DEPARTMENTS is defined
+    let PAYROLL_FIXED_ROUTE = [];
     const ALL_DEPARTMENTS = <?php
       $deptList = [];
       try {
@@ -11826,7 +12654,9 @@ $connection->close();
         }
         if ($dRes) $dRes->free();
       } catch (Throwable $t) {}
-      if (empty($deptList)) $deptList = ['CPDO','GSO','CBO','CTO','CACCO','CADO','CMO','HR'];
+      if (empty($deptList)) $deptList = ['CPDO','GSO','CBO','CTO','CACCO','CADO','CMO','HR','ACCOUNTING','CAO'];
+      // Deduplicate after UPPER normalization (e.g. ACCOUNT -> ACCOUNTING already mapped server-side)
+      $deptList = array_values(array_unique($deptList));
       echo json_encode($deptList);
     ?>;
 
@@ -12207,6 +13037,26 @@ $connection->close();
 
         if (data.success || data.track_id || data.tracking_id) {
           document.getElementById('routeDocumentModal')?.remove();
+
+          // Update in-memory documents array immediately so re-render reflects routed state.
+          // The document should disappear from this dept user's view since current_holder
+          // now points to nextDept (no longer this user's dept).
+          const routedDocId = String(docId || '');
+          const docPools = [documents, window.documents, window.trackingDocuments];
+          const seenPools = new Set();
+          for (const pool of docPools) {
+            if (!pool || seenPools.has(pool)) continue;
+            seenPools.add(pool);
+            for (const item of pool) {
+              if (item && String(item.id) === routedDocId) {
+                item.status = 'Pending';
+                item.current_holder = nextDept;
+                item.department = nextDept;
+                break;
+              }
+            }
+          }
+
           await showRouteSuccessModal(nextDept);
           if (typeof window.applyFiltersAndSearch === 'function') window.applyFiltersAndSearch();
         } else {

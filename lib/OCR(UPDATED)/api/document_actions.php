@@ -15,6 +15,8 @@ header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, Authorization');
 
+$GLOBALS['API_BUILD'] = 'add_attachment_childid_v2';
+
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
     exit();
@@ -24,16 +26,23 @@ function sendJson($data) {
     if (ob_get_length()) {
         ob_clean();
     }
+    if (is_array($data)) {
+        $data['_api_build'] = $GLOBALS['API_BUILD'] ?? null;
+    }
     echo json_encode($data);
     exit();
 }
 
 set_exception_handler(function ($e) {
-    sendJson(['success' => false, 'error' => 'Server exception', 'details' => $e->getMessage()]);
+    $b = $GLOBALS['API_BUILD'] ?? '';
+    $prefix = $b !== '' ? '[' . $b . '] ' : '';
+    sendJson(['success' => false, 'error' => 'Server exception', 'details' => $prefix . $e->getMessage()]);
 });
 
 set_error_handler(function ($severity, $message, $file, $line) {
-    sendJson(['success' => false, 'error' => 'Server error', 'details' => $message, 'line' => $line]);
+    $b = $GLOBALS['API_BUILD'] ?? '';
+    $prefix = $b !== '' ? '[' . $b . '] ' : '';
+    sendJson(['success' => false, 'error' => 'Server error', 'details' => $prefix . $message, 'line' => $line]);
 });
 
 require_once '../config.php';
@@ -44,6 +53,97 @@ $connection = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME);
 if ($connection->connect_error) {
     http_response_code(500);
     sendJson(['success' => false, 'error' => 'Database connection failed']);
+}
+
+// Quick health check endpoint
+$action = $_GET['action'] ?? $_POST['action'] ?? '';
+if ($action === 'ping') {
+    sendJson(['success' => true, 'message' => 'pong']);
+}
+
+// Force drop unique_attachment index to allow multiple attachments (safe: only if exists)
+if ($action === 'migrate_drop_unique_attachment') {
+    $out = ['success' => true, 'message' => 'unique_attachment dropped'];
+    try {
+        // Check if index exists first
+        $idxRes = $connection->query("SHOW INDEX FROM document_attachments WHERE Key_name = 'unique_attachment'");
+        $exists = $idxRes && $idxRes->num_rows > 0;
+        if ($idxRes) $idxRes->free();
+        if ($exists) {
+            $connection->query("ALTER TABLE document_attachments DROP INDEX unique_attachment");
+            $out['message'] = 'unique_attachment index dropped successfully';
+        } else {
+            $out['message'] = 'unique_attachment index does not exist (already removed)';
+        }
+    } catch (Throwable $e) {
+        $out['success'] = false;
+        $out['error'] = $e->getMessage();
+    }
+    sendJson($out);
+}
+
+// Debug endpoint: list recent attachments for a tracking_id
+if ($action === 'debug_attachments') {
+    $tid = (int)($_GET['tracking_id'] ?? 0);
+    if ($tid <= 0) {
+        sendJson(['success' => false, 'error' => 'Invalid or missing tracking_id']);
+    }
+    $out = ['success' => true, 'tracking_id' => $tid, 'attachments' => []];
+    try {
+        $sql = "SELECT id, tracking_id, parent_tracking_id, child_tracking_id, file_name, created_at FROM document_attachments WHERE tracking_id = ? OR parent_tracking_id = ? ORDER BY created_at DESC LIMIT 10";
+        if ($stmt = $connection->prepare($sql)) {
+            $stmt->bind_param('ii', $tid, $tid);
+            if ($stmt->execute()) {
+                $res = $stmt->get_result();
+                while ($r = $res->fetch_assoc()) {
+                    $out['attachments'][] = $r;
+                }
+                $res->free();
+            }
+            $stmt->close();
+        }
+    } catch (Throwable $e) {
+        $out['error'] = $e->getMessage();
+    }
+    sendJson($out);
+}
+
+// Diagnostics: schema for document_attachments
+if ($action === 'schema_document_attachments') {
+    $out = ['success' => true];
+    try {
+        $out['columns'] = [];
+        if ($cr = $connection->query("SHOW COLUMNS FROM document_attachments")) {
+            while ($r = $cr->fetch_assoc()) {
+                $out['columns'][] = $r;
+            }
+            $cr->free();
+        }
+    } catch (Throwable $e) {
+        $out['columns_error'] = $e->getMessage();
+    }
+    try {
+        $out['indexes'] = [];
+        if ($ir = $connection->query("SHOW INDEX FROM document_attachments")) {
+            while ($r = $ir->fetch_assoc()) {
+                $out['indexes'][] = $r;
+            }
+            $ir->free();
+        }
+    } catch (Throwable $e) {
+        $out['indexes_error'] = $e->getMessage();
+    }
+    try {
+        if ($sr = $connection->query("SHOW CREATE TABLE document_attachments")) {
+            if ($row = $sr->fetch_assoc()) {
+                $out['create_table'] = $row;
+            }
+            $sr->free();
+        }
+    } catch (Throwable $e) {
+        $out['create_table_error'] = $e->getMessage();
+    }
+    sendJson($out);
 }
 
 // Ensure required tables exist
@@ -258,6 +358,14 @@ if ($action === 'return_document') {
     try {
         $notifyUrl = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? 'https://' : 'http://') .
             $_SERVER['HTTP_HOST'] . dirname($_SERVER['REQUEST_URI']) . '/notifications.php';
+        
+        // Ensure we use a relative path for the notification so it resolves correctly on the web
+        $notifFilePath = $filePath;
+        if (stripos($notifFilePath, 'uploads/') === false && stripos($notifFilePath, 'lib/') !== false) {
+             // If it contains lib/ but not uploads/, it might be a weird absolute-ish path
+             $notifFilePath = preg_replace('/.*lib\//', 'lib/', $notifFilePath);
+        }
+
         $payload = [
             'action' => 'create',
             'title' => $docType,
@@ -266,7 +374,7 @@ if ($action === 'return_document') {
             'recipient_department' => $returnToDept,
             'sender_username' => $returnedBy,
             'department' => $returnedByDept,
-            'file_url' => $filePath,
+            'file_url' => $notifFilePath,
             'tracking_id' => $trackingId,
             'end_location' => $endLocation,
             'current_holder' => $returnToDept,
@@ -684,122 +792,24 @@ if ($action === 'add_attachment') {
         }
         $dbg['move_ok'] = 1;
 
-        // ============ IMAGE COMPRESSION (Option A) ============
-        // Compress images to reduce storage: resize to max 1920px, JPEG quality 80%
-        $imageExts = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp'];
-        if (in_array($ext, $imageExts, true) && function_exists('imagecreatefromjpeg')) {
-            $dbg['phase'] = 'image_compression';
-            $originalSize = filesize($filePath);
-            $dbg['original_size'] = $originalSize;
-            
-            $maxDimension = 1920;
-            $jpegQuality = 80;
-            $compressed = false;
-            
-            try {
-                $imageInfo = @getimagesize($filePath);
-                if ($imageInfo !== false) {
-                    $width = $imageInfo[0];
-                    $height = $imageInfo[1];
-                    $mime = $imageInfo['mime'] ?? '';
-                    $dbg['original_dimensions'] = ['width' => $width, 'height' => $height];
-                    
-                    // Load image based on type
-                    $srcImage = null;
-                    switch ($mime) {
-                        case 'image/jpeg':
-                            $srcImage = @imagecreatefromjpeg($filePath);
-                            break;
-                        case 'image/png':
-                            $srcImage = @imagecreatefrompng($filePath);
-                            break;
-                        case 'image/gif':
-                            $srcImage = @imagecreatefromgif($filePath);
-                            break;
-                        case 'image/webp':
-                            if (function_exists('imagecreatefromwebp')) {
-                                $srcImage = @imagecreatefromwebp($filePath);
-                            }
-                            break;
-                        case 'image/bmp':
-                            if (function_exists('imagecreatefrombmp')) {
-                                $srcImage = @imagecreatefrombmp($filePath);
-                            }
-                            break;
-                    }
-                    
-                    if ($srcImage !== null && $srcImage !== false) {
-                        // Calculate new dimensions if needed
-                        $newWidth = $width;
-                        $newHeight = $height;
-                        $needsResize = ($width > $maxDimension || $height > $maxDimension);
-                        
-                        if ($needsResize) {
-                            if ($width > $height) {
-                                $newWidth = $maxDimension;
-                                $newHeight = (int)round($height * ($maxDimension / $width));
-                            } else {
-                                $newHeight = $maxDimension;
-                                $newWidth = (int)round($width * ($maxDimension / $height));
-                            }
-                            $dbg['new_dimensions'] = ['width' => $newWidth, 'height' => $newHeight];
-                        }
-                        
-                        // Create resized image or use original
-                        if ($needsResize) {
-                            $dstImage = imagecreatetruecolor($newWidth, $newHeight);
-                            // Preserve transparency for PNG
-                            if ($mime === 'image/png') {
-                                imagealphablending($dstImage, false);
-                                imagesavealpha($dstImage, true);
-                                $transparent = imagecolorallocatealpha($dstImage, 0, 0, 0, 127);
-                                imagefill($dstImage, 0, 0, $transparent);
-                            }
-                            imagecopyresampled($dstImage, $srcImage, 0, 0, 0, 0, $newWidth, $newHeight, $width, $height);
-                            imagedestroy($srcImage);
-                        } else {
-                            $dstImage = $srcImage;
-                        }
-                        
-                        // Save as JPEG for best compression (except PNG with transparency)
-                        $compressedPath = $filePath;
-                        if ($mime !== 'image/png') {
-                            // Convert to JPEG
-                            $jpgName = preg_replace('/\.[^.]+$/', '.jpg', $uniqueName);
-                            $compressedPath = $uploadDir . $jpgName;
-                            $relativePath = 'uploads/attachments/' . $trackingId . '/' . $jpgName;
-                            imagejpeg($dstImage, $compressedPath, $jpegQuality);
-                            // Remove original if different
-                            if ($compressedPath !== $filePath && file_exists($filePath)) {
-                                @unlink($filePath);
-                            }
-                            $filePath = $compressedPath;
-                            $ext = 'jpg';
-                            $compressed = true;
-                        } else {
-                            // Keep PNG but optimize
-                            imagepng($dstImage, $filePath, 6); // compression level 6
-                            $compressed = true;
-                        }
-                        
-                        imagedestroy($dstImage);
-                        
-                        $newSize = filesize($filePath);
-                        $dbg['compressed_size'] = $newSize;
-                        $dbg['compression_ratio'] = $originalSize > 0 ? round((1 - $newSize / $originalSize) * 100, 1) . '%' : '0%';
-                        $dbg['relative_path'] = $relativePath;
-                        
-                        // Update fileSize for DB
-                        $fileSize = $newSize;
-                    }
-                }
-            } catch (Throwable $compErr) {
-                $dbg['compression_error'] = $compErr->getMessage();
-                // Continue with original file if compression fails
-            }
-            
-            $dbg['compressed'] = $compressed ? 1 : 0;
+        // ============ ENCRYPT ATTACHMENT ============
+        // Requirement: Web attachment should be exactly same as mobile send.
+        // We encrypt the file using file_crypto.php for consistent viewing/decryption via download.php.
+        require_once __DIR__ . '/file_crypto.php';
+        $encryptedPath = $filePath . '.enc';
+        if (file_crypto_encrypt_stream_to_path($filePath, $encryptedPath)) {
+            @unlink($filePath); // Remove original unencrypted file
+            $filePath = $encryptedPath;
+            $relativePath .= '.enc';
+            $dbg['encrypted'] = 1;
+            $dbg['final_path'] = $filePath;
+        } else {
+            $dbg['encrypted'] = 0;
         }
+
+        // ============ IMAGE COMPRESSION (Skipped for exactness) ============
+        // Removed to ensure "web attachment also are exactly same what document attach mobile send"
+        $compressed = false;
 
         // Different deployments have different column names. Detect actual schema and map.
         $cols = [];
@@ -842,6 +852,11 @@ if ($action === 'add_attachment') {
             $needAdd[] = "ADD COLUMN remarks TEXT NULL";
         }
 
+        // Needed to support multiple attachments on deployments with UNIQUE(tracking_id)
+        if (!$hasCol('parent_tracking_id')) {
+            $needAdd[] = "ADD COLUMN parent_tracking_id INT NULL";
+        }
+
         if (!empty($needAdd)) {
             try {
                 $dbg['phase'] = 'schema_alter_attempt';
@@ -851,6 +866,7 @@ if ($action === 'add_attachment') {
             } catch (Throwable $t) {
                 $dbg['phase'] = 'schema_alter_failed';
                 $dbg['schema_alter_error'] = $t->getMessage();
+                error_log('[add_attachment] schema alter failed: ' . $t->getMessage());
             }
 
             // Re-read columns after attempt
@@ -940,7 +956,52 @@ if ($action === 'add_attachment') {
         $insertCols[] = $map['file_name']; $values[] = $fileName; $types .= 's';
 
         if (isset($map['parent_tracking_id'])) { $insertCols[] = $map['parent_tracking_id']; $values[] = $trackingId; $types .= 'i'; }
-        if (isset($map['child_tracking_id'])) { $insertCols[] = $map['child_tracking_id']; $values[] = 0; $types .= 'i'; }
+        if (isset($map['child_tracking_id'])) {
+            // Some DBs have UNIQUE KEY unique_attachment (parent_tracking_id, child_tracking_id).
+            // If we always insert child_tracking_id=0, the 2nd attachment fails with a duplicate key like "138-0".
+            // Ensure child_tracking_id is unique per parent.
+            $childTrackingId = 0;
+            $parentColForChild = isset($map['parent_tracking_id']) ? $map['parent_tracking_id'] : $map['tracking'];
+            try {
+                if ($selMaxChild = $connection->prepare("SELECT COALESCE(MAX({$map['child_tracking_id']}), 0) AS m FROM document_attachments WHERE {$parentColForChild} = ?")) {
+                    $selMaxChild->bind_param('i', $trackingId);
+                    if ($selMaxChild->execute()) {
+                        $resChild = $selMaxChild->get_result();
+                        if ($rowChild = $resChild->fetch_assoc()) {
+                            $childTrackingId = ((int)($rowChild['m'] ?? 0)) + 1;
+                        }
+                        if ($resChild) { $resChild->free(); }
+                    }
+                    $selMaxChild->close();
+                }
+            } catch (Throwable $_) {
+            }
+            if ($childTrackingId <= 0) {
+                // Very defensive fallback.
+                $childTrackingId = (int)(microtime(true) * 1000);
+            }
+            // Double-check the pair does not already exist; if it does, use timestamp fallback
+            try {
+                if ($checkDup = $connection->prepare("SELECT COUNT(*) AS cnt FROM document_attachments WHERE {$parentColForChild} = ? AND {$map['child_tracking_id']} = ?")) {
+                    $checkDup->bind_param('ii', $trackingId, $childTrackingId);
+                    if ($checkDup->execute()) {
+                        $resDup = $checkDup->get_result();
+                        if ($rowDup = $resDup->fetch_assoc()) {
+                            if ((int)($rowDup['cnt'] ?? 0) > 0) {
+                                $childTrackingId = (int)(microtime(true) * 1000);
+                            }
+                        }
+                        if ($resDup) { $resDup->free(); }
+                    }
+                    $checkDup->close();
+                }
+            } catch (Throwable $_) {
+            }
+            $dbg['computed_child_tracking_id'] = $childTrackingId;
+            $dbg['parent_tracking_id'] = $trackingId;
+            error_log('[add_attachment] about_to_insert parent=' . $trackingId . ' child=' . $childTrackingId . ' api_build=' . ($GLOBALS['API_BUILD'] ?? ''));
+            $insertCols[] = $map['child_tracking_id']; $values[] = $childTrackingId; $types .= 'i';
+        }
         if (isset($map['page_order'])) {
             $pageOrder = 1;
             $maxCol = isset($map['parent_tracking_id']) ? $map['parent_tracking_id'] : $map['tracking'];
@@ -952,6 +1013,7 @@ if ($action === 'add_attachment') {
                         if ($row = $res->fetch_assoc()) {
                             $pageOrder = ((int)($row['m'] ?? 0)) + 1;
                         }
+                        if ($res) { $res->free(); }
                     }
                     $selMax->close();
                 }
@@ -993,7 +1055,135 @@ if ($action === 'add_attachment') {
         if (!$ok) {
             $dbg['phase'] = 'insert_failed';
             $dbg['db_error'] = $connection->error;
-            $out = ['success' => false, 'error' => 'Failed to save attachment record'];
+            $dbg['db_errno'] = $connection->errno;
+            error_log('[add_attachment] insert_failed tracking_id=' . $trackingId . ' dept=' . $department . ' file=' . $fileName . ' errno=' . $connection->errno . ' err=' . $connection->error);
+
+            // Some deployments have a UNIQUE constraint on tracking_id in document_attachments.
+            // To support multiple attachments, retry insert using parent_tracking_id when available.
+            if ((int)$connection->errno === 1062) {
+                // Best-effort: ensure parent_tracking_id exists so retry can work.
+                if (!isset($map['parent_tracking_id'])) {
+                    try {
+                        if ($colRes2 = $connection->query("SHOW COLUMNS FROM document_attachments")) {
+                            $cols2 = [];
+                            while ($c2 = $colRes2->fetch_assoc()) {
+                                $cols2[] = strtolower((string)($c2['Field'] ?? ''));
+                            }
+                            $colRes2->free();
+                            if (!in_array('parent_tracking_id', $cols2, true)) {
+                                @$connection->query("ALTER TABLE document_attachments ADD COLUMN parent_tracking_id INT NULL");
+                            }
+                        }
+                    } catch (Throwable $_) {
+                    }
+                    // Re-evaluate mapping
+                    try {
+                        if ($colRes3 = $connection->query("SHOW COLUMNS FROM document_attachments")) {
+                            $cols3 = [];
+                            while ($c3 = $colRes3->fetch_assoc()) {
+                                $cols3[] = strtolower((string)($c3['Field'] ?? ''));
+                            }
+                            $colRes3->free();
+                            if (in_array('parent_tracking_id', $cols3, true)) {
+                                $map['parent_tracking_id'] = 'parent_tracking_id';
+                            }
+                        }
+                    } catch (Throwable $_) {
+                    }
+                }
+
+                if (isset($map['parent_tracking_id'])) {
+                try {
+                    $retryCols = $insertCols;
+                    $retryValues = $values;
+                    $retryTypes = $types;
+
+                    // Overwrite the tracking_id value with 0 to bypass UNIQUE(tracking_id),
+                    // while still linking via parent_tracking_id = $trackingId.
+                    $trackingColName = $map['tracking'];
+                    for ($i = 0; $i < count($retryCols); $i++) {
+                        if ($retryCols[$i] === $trackingColName) {
+                            $retryValues[$i] = 0;
+                        }
+                    }
+
+                    // Also ensure child_tracking_id is unique on retry (for UNIQUE(parent_tracking_id, child_tracking_id)).
+                    if (isset($map['child_tracking_id'])) {
+                        $childColName = $map['child_tracking_id'];
+                        $retryChild = 0;
+                        $parentColForChild2 = isset($map['parent_tracking_id']) ? $map['parent_tracking_id'] : $map['tracking'];
+                        try {
+                            if ($selMaxChild2 = $connection->prepare("SELECT COALESCE(MAX({$childColName}), 0) AS m FROM document_attachments WHERE {$parentColForChild2} = ?")) {
+                                $selMaxChild2->bind_param('i', $trackingId);
+                                if ($selMaxChild2->execute()) {
+                                    $resChild2 = $selMaxChild2->get_result();
+                                    if ($rowChild2 = $resChild2->fetch_assoc()) {
+                                        $retryChild = ((int)($rowChild2['m'] ?? 0)) + 1;
+                                    }
+                                    if ($resChild2) { $resChild2->free(); }
+                                }
+                                $selMaxChild2->close();
+                            }
+                        } catch (Throwable $_) {
+                        }
+                        if ($retryChild <= 0) {
+                            $retryChild = (int)(microtime(true) * 1000);
+                        }
+                        for ($i = 0; $i < count($retryCols); $i++) {
+                            if ($retryCols[$i] === $childColName) {
+                                $retryValues[$i] = $retryChild;
+                            }
+                        }
+                    }
+
+                    $retryPlaceholders = implode(',', array_fill(0, count($retryCols), '?'));
+                    $retryColList = implode(',', $retryCols);
+                    $retryStmt = $connection->prepare("INSERT INTO document_attachments ({$retryColList}) VALUES ({$retryPlaceholders})");
+                    if ($retryStmt) {
+                        $bind2 = [];
+                        $bind2[] = $retryTypes;
+                        for ($i = 0; $i < count($retryValues); $i++) {
+                            $bind2[] = &$retryValues[$i];
+                        }
+                        call_user_func_array([$retryStmt, 'bind_param'], $bind2);
+                        $ok2 = $retryStmt->execute();
+                        $insertId2 = $connection->insert_id;
+                        $retryErr = $retryStmt->error;
+                        $retryStmt->close();
+
+                        if ($ok2) {
+                            $insertId = $insertId2;
+                            $dbg['phase'] = 'insert_retry_success';
+                            $dbg['insert_retry_used_parent_tracking'] = 1;
+                        } else {
+                            $dbg['phase'] = 'insert_retry_failed';
+                            $dbg['insert_retry_error'] = $retryErr;
+                            error_log('[add_attachment] insert_retry_failed tracking_id=' . $trackingId . ' dept=' . $department . ' file=' . $fileName . ' err=' . $retryErr);
+                            $out = ['success' => false, 'error' => 'Failed to save attachment record', 'details' => $retryErr];
+                            if ($debugAttach) $out['debug'] = $dbg;
+                            sendJson($out);
+                        }
+                    } else {
+                        $dbg['phase'] = 'insert_retry_prepare_failed';
+                        $dbg['insert_retry_prepare_error'] = $connection->error;
+                        error_log('[add_attachment] insert_retry_prepare_failed tracking_id=' . $trackingId . ' dept=' . $department . ' file=' . $fileName . ' err=' . $connection->error);
+                        $out = ['success' => false, 'error' => 'Failed to save attachment record', 'details' => $connection->error];
+                        if ($debugAttach) $out['debug'] = $dbg;
+                        sendJson($out);
+                    }
+                } catch (Throwable $t) {
+                    $dbg['phase'] = 'insert_retry_throwable';
+                    $dbg['insert_retry_throwable'] = $t->getMessage();
+                    error_log('[add_attachment] insert_retry_throwable tracking_id=' . $trackingId . ' dept=' . $department . ' file=' . $fileName . ' ex=' . $t->getMessage());
+                    $out = ['success' => false, 'error' => 'Failed to save attachment record', 'details' => $t->getMessage()];
+                    if ($debugAttach) $out['debug'] = $dbg;
+                    sendJson($out);
+                }
+                }
+            }
+
+            error_log('[add_attachment] failed_to_save_attachment_record tracking_id=' . $trackingId . ' dept=' . $department . ' file=' . $fileName . ' err=' . $connection->error);
+            $out = ['success' => false, 'error' => 'Failed to save attachment record', 'details' => $connection->error];
             if ($debugAttach) $out['debug'] = $dbg;
             sendJson($out);
         }
@@ -1035,6 +1225,7 @@ if ($action === 'add_attachment') {
     } catch (Throwable $t) {
         $dbg['phase'] = 'throwable';
         $dbg['throwable'] = $t->getMessage();
+        error_log('[add_attachment] throwable tracking_id=' . (int)($_POST['tracking_id'] ?? 0) . ' dept=' . (string)($_POST['department'] ?? '') . ' ex=' . $t->getMessage());
         $out = ['success' => false, 'error' => 'Server exception', 'details' => $t->getMessage()];
         if ($debugAttach) $out['debug'] = $dbg;
         sendJson($out);
@@ -1226,6 +1417,8 @@ if ($action === 'get_attachments') {
         sendJson(['success' => false, 'error' => 'Attachment table schema mismatch', 'details' => 'Missing tracking id column']);
     }
 
+    $parentTrackingCol = $hasCol('parent_tracking_id') ? 'parent_tracking_id' : null;
+
     $selectCols = [];
     if ($hasCol('id')) $selectCols[] = 'id';
     if ($hasCol('file_path')) $selectCols[] = 'file_path';
@@ -1246,12 +1439,20 @@ if ($action === 'get_attachments') {
     }
 
     $sel = !empty($selectCols) ? implode(', ', $selectCols) : '*';
-    $sql = "SELECT {$sel} FROM document_attachments WHERE {$trackingCol} = ? ORDER BY " . ($hasCol('created_at') ? 'created_at' : 'id') . " DESC";
+    if ($parentTrackingCol !== null) {
+        $sql = "SELECT {$sel} FROM document_attachments WHERE ({$trackingCol} = ? OR {$parentTrackingCol} = ?) ORDER BY " . ($hasCol('created_at') ? 'created_at' : 'id') . " DESC";
+    } else {
+        $sql = "SELECT {$sel} FROM document_attachments WHERE {$trackingCol} = ? ORDER BY " . ($hasCol('created_at') ? 'created_at' : 'id') . " DESC";
+    }
     $stmt = $connection->prepare($sql);
     if (!$stmt) {
         sendJson(['success' => false, 'error' => 'Failed to prepare attachments query', 'details' => $connection->error]);
     }
-    $stmt->bind_param('i', $trackingId);
+    if ($parentTrackingCol !== null) {
+        $stmt->bind_param('ii', $trackingId, $trackingId);
+    } else {
+        $stmt->bind_param('i', $trackingId);
+    }
     $stmt->execute();
     $result = $stmt->get_result();
 
@@ -1303,9 +1504,18 @@ if ($action === 'get_attachments') {
             $exists = true;
         }
 
-        $row['file_url'] = ($exists && isset($row['id']))
-            ? ($appBase . '/lib/OCR(UPDATED)/download_attachment.php?id=' . urlencode((string)$row['id']) . '&inline=1&t=' . time())
-            : '';
+        $row['file_url'] = '';
+        if ($exists && isset($row['id'])) {
+            $attId = (string)$row['id'];
+            $exp = time() + 900;
+            $payload = 'att:' . $attId . ':' . $exp;
+            $key = defined('SECRET_KEY') ? (string)SECRET_KEY : '';
+            $sig = $key !== '' ? hash_hmac('sha256', $payload, $key) : '';
+            $row['file_url'] = $appBase . '/lib/OCR(UPDATED)/download_attachment.php?id=' . urlencode($attId) . '&inline=1&t=' . time();
+            if ($sig !== '') {
+                $row['file_url'] .= '&exp=' . urlencode((string)$exp) . '&sig=' . urlencode($sig);
+            }
+        }
         $attachments[] = $row;
     }
     $stmt->close();
@@ -1865,6 +2075,66 @@ if ($action === 'get_document_bundle') {
     }
 
     sendJson(['success' => true, 'bundle' => $bundle]);
+}
+
+// ============ DELETE DOCUMENT ============
+if ($action === 'delete_document') {
+    $trackingId = (int)($_POST['tracking_id'] ?? 0);
+    $username = trim($_POST['username'] ?? '');
+    $department = trim($_POST['department'] ?? '');
+
+    if ($trackingId <= 0) {
+        sendJson(['success' => false, 'error' => 'Invalid tracking_id']);
+    }
+
+    // Optional: Only allow deletion if user is the current holder or an admin
+    // For now, we'll implement a straightforward deletion.
+
+    $connection->begin_transaction();
+
+    try {
+        // 1. Get file path to delete from disk
+        $stmt = $connection->prepare("SELECT file_path FROM tracking WHERE id = ?");
+        $stmt->bind_param('i', $trackingId);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $doc = $res->fetch_assoc();
+        $stmt->close();
+
+        if ($doc && !empty($doc['file_path'])) {
+            $filePath = __DIR__ . '/../' . ltrim($doc['file_path'], '/');
+            if (file_exists($filePath)) {
+                @unlink($filePath);
+            }
+        }
+
+        // 2. Delete related records
+        $connection->query("DELETE FROM document_comments WHERE tracking_id = $trackingId");
+        $connection->query("DELETE FROM document_attachments WHERE tracking_id = $trackingId");
+        $connection->query("DELETE FROM document_history WHERE doc_id = $trackingId");
+        $connection->query("DELETE FROM notifications WHERE tracking_id = $trackingId");
+        $connection->query("DELETE FROM ocr_pages WHERE scope = 'tracking' AND doc_id = $trackingId");
+
+        // 3. Delete the tracking record
+        $stmtDel = $connection->prepare("DELETE FROM tracking WHERE id = ?");
+        $stmtDel->bind_param('i', $trackingId);
+        $stmtDel->execute();
+        $stmtDel->close();
+
+        $connection->commit();
+
+        // Sync to Firestore if needed
+        if (function_exists('firestore_delete_document')) {
+            try {
+                firestore_delete_document('tracking', (string)$trackingId);
+            } catch (Throwable $e) {}
+        }
+
+        sendJson(['success' => true, 'message' => 'Document deleted successfully']);
+    } catch (Throwable $e) {
+        $connection->rollback();
+        sendJson(['success' => false, 'error' => 'Failed to delete document', 'details' => $e->getMessage()]);
+    }
 }
 
 // Default response

@@ -27,7 +27,7 @@ function checkRememberMeCookie() {
                 $stmt = $db->prepare("SELECT id, name, email, role, department FROM users WHERE id = ? LIMIT 1");
                 $stmt->execute([$userId]);
                 if ($row = $stmt->fetch()) {
-                    $expectedHash = hash_hmac('sha256', $row['id'] . $row['email'], SECRET_KEY);
+                    $expectedHash = hash_hmac('sha256', $row['id'] . $row['email'], 'your_secret_key');
                     if (hash_equals($expectedHash, $hash)) {
                         $_SESSION['loggedin'] = true;
                         $_SESSION['user_id'] = $row['id'];
@@ -127,6 +127,14 @@ function handleForgotPasswordDB($email) {
             $text = "Hello " . $user['name'] . ",\n\nYour password reset code is: " . $code . "\n\nThis code will expire in 15 minutes.\n\nIf you did not request this password reset, please ignore this email.\n\n© 2026 CHRMO Document Tracking System";
             
             $emailSent = $emailService->send($email, $subject, $html, $text);
+
+			if (!$emailSent) {
+				return [
+					'success' => false,
+					'message' => 'Could not send verification code email. Please contact the administrator to configure SMTP.',
+					'smtp_error' => method_exists($emailService, 'lastError') ? $emailService->lastError() : null,
+				];
+			}
             
             // Log the event
             Security::logEvent('password_reset_requested', $user['id'], $email);
@@ -464,15 +472,8 @@ if (isset($_POST['reset_password']) && $_POST['reset_password'] === 'true') {
 
 // Check for logout success message from dashboard.php
 $showLogoutModal = false;
-if (
-    isset($_GET['logged_out'])
-    && in_array(strtolower((string)$_GET['logged_out']), ['1', 'true', 'yes'], true)
-) {
+if (isset($_GET['logged_out']) && $_GET['logged_out'] === 'true') {
     $showLogoutModal = true;
-}
-if (isset($_COOKIE['logout_feedback']) && $_COOKIE['logout_feedback'] === '1') {
-    $showLogoutModal = true;
-    setcookie('logout_feedback', '', time() - 3600, '/');
 }
 
 // Check for registration success message from register.php
@@ -521,7 +522,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !isset($_POST['forgot_password']) &
                 // Handle Remember Me
                 if ($rememberMe) {
                     $cookieName = 'remember_me';
-                    $cookieValue = $row['id'] . ':' . hash_hmac('sha256', $row['id'] . $row['email'], SECRET_KEY);
+                    $cookieValue = $row['id'] . ':' . hash_hmac('sha256', $row['id'] . $row['email'], 'your_secret_key');
                     $expiration = time() + (86400 * 30);
                     $cookieOptions = [
                         'expires' => $expiration,
@@ -838,13 +839,13 @@ include 'header.php';
                     <div class="w-full border-t border-gray-200"></div>
                 </div>
                 <div class="relative flex justify-center text-sm">
-                    <span class="px-4 bg-white text-gray-500">Need an account?</span>
+                    <span class="px-4 bg-white text-gray-500">Don't have an account?</span>
                 </div>
             </div>
 
-            <div class="block w-full text-center py-3 px-4 border border-gray-200 text-gray-500 rounded-xl text-sm bg-gray-50">
-                <i class="fas fa-info-circle mr-1"></i> Contact your administrator to create an account.
-            </div>
+            <a href="register.php" class="block w-full text-center py-3 px-4 border border-primary-400 text-primary-500 rounded-xl font-medium hover:bg-primary-500 hover:text-white hover:border-primary-500 btn-press">
+                Register Now
+            </a>
         </form>
     </div>
 </div>

@@ -68,12 +68,48 @@ if (!empty($row['file_path'])) {
 
 // Fallback to the archive storage pattern lookup
 if (!$path || !is_file($path)) {
-    $path = archive_find_file_path($id);
+    // Strategy: Search for file in known sibling storage locations
+    $baseName = '';
+    if (!empty($row['file_path'])) {
+        $baseName = basename($row['file_path']);
+    }
+    
+    $roots = [];
+    $docRoot = (string)($_SERVER['DOCUMENT_ROOT'] ?? '');
+    if ($docRoot !== '') {
+        $roots[] = rtrim($docRoot, '/') . '/CHRMO-TRACKING-main/lib/OCR(UPDATED)';
+        $roots[] = rtrim($docRoot, '/') . '/flutter_application_7/lib/OCR(UPDATED)';
+    }
+    
+    $subDirs = ['uploads/final', 'uploads/archive', 'uploads/returned', 'uploads/batch'];
+    
+    foreach ($roots as $root) {
+        foreach ($subDirs as $sd) {
+            $cand = rtrim($root, '/\\') . '/' . $sd . '/' . $baseName;
+            if (is_file($cand)) {
+                $path = $cand;
+                break 2;
+            }
+            $candEnc = $cand . '.enc';
+            if (is_file($candEnc)) {
+                $path = $candEnc;
+                break 2;
+            }
+        }
+    }
+}
+
+if (!$path || !is_file($path)) {
+    // Final check for specific archive pattern if filename search failed
+    if (!$path || !is_file($path)) {
+        $path = archive_find_file_path($id);
+    }
 }
 
 if (!$path || !is_file($path)) {
     http_response_code(404);
-    echo 'File not found';
+    header('Content-Type: text/plain');
+    echo "File not found on server.\nID: $id\nExpected: " . ($row['file_path'] ?? 'unknown');
     exit();
 }
 
@@ -97,7 +133,13 @@ if (substr($blob, 0, 4) === 'ENC1') {
     $plain = $blob;
 }
 
+// Diagnostic logging for empty payloads
+if (empty($plain)) {
+    error_log("archive_download.php: Decrypted content is empty for ID $id (path: $path)");
+}
+
 $ext = archive_guess_extension_from_path($path) ?: infer_ext_from_icon($row['file_type_icon'] ?? '');
+$mime = mime_from_extension($ext);
 
 // Prefer a stable, user-friendly download name: <Type>(YYYY-MM-DD_HH-mm).ext
 $base = trim((string)($row['type'] ?? ''));
@@ -112,15 +154,25 @@ if ($ext && !str_ends_with(strtolower($downloadName), '.' . strtolower($ext))) {
     $downloadName .= '.' . $ext;
 }
 
-$mime = mime_from_extension($ext);
 if ($inline && !$downloadFlag) {
+    // Clear any previous output buffers to avoid corrupting the file
+    if (ob_get_level()) ob_end_clean();
+    
     header('Content-Type: ' . $mime);
     header('Content-Length: ' . strlen($plain));
     header('Content-Disposition: inline; filename="' . $downloadName . '"');
+    header('Cache-Control: private, max-age=0, must-revalidate');
+    header('Pragma: public');
 } else {
+    // Clear any previous output buffers
+    if (ob_get_level()) ob_end_clean();
+
     header('Content-Type: ' . $mime);
     header('Content-Length: ' . strlen($plain));
     header('Content-Disposition: attachment; filename="' . $downloadName . '"');
+    header('Content-Transfer-Encoding: binary');
+    header('Cache-Control: must-revalidate');
+    header('Pragma: public');
 }
 
 echo $plain;

@@ -9,6 +9,7 @@ require_once 'config.php';
 class EmailService {
     private $usePHPMailer = false;
     private $mailer = null;
+    private $lastError = '';
 
     public function __construct() {
         // Try to load PHPMailer if available
@@ -24,6 +25,10 @@ class EmailService {
         } else {
             error_log("Composer autoload.php not found at: " . __DIR__ . '/../../vendor/autoload.php');
         }
+    }
+
+    public function lastError() {
+        return $this->lastError;
     }
 
     private function initPHPMailer() {
@@ -63,6 +68,7 @@ class EmailService {
             error_log("PHPMailer initialized successfully with SMTP settings: " . SMTP_HOST . ":" . SMTP_PORT);
         } catch (Exception $e) {
             error_log("PHPMailer initialization failed: " . $e->getMessage());
+            $this->lastError = $e->getMessage();
             $this->usePHPMailer = false;
         }
     }
@@ -97,6 +103,7 @@ class EmailService {
      * Generic send method
      */
     public function send($to, $subject, $htmlBody, $textBody = '') {
+        $this->lastError = '';
         error_log("EmailService::send called for $to with subject: $subject");
         error_log("Using PHPMailer: " . ($this->usePHPMailer ? 'Yes' : 'No'));
         
@@ -126,6 +133,7 @@ class EmailService {
         } catch (Exception $e) {
             error_log("PHPMailer send failed to $to: " . $e->getMessage());
             error_log("PHPMailer Error Info: " . $this->mailer->ErrorInfo);
+            $this->lastError = $this->mailer->ErrorInfo ?: $e->getMessage();
             return false;
         }
     }
@@ -136,13 +144,11 @@ class EmailService {
         $headers .= "From: " . SMTP_FROM_NAME . " <" . SMTP_FROM_EMAIL . ">\r\n";
         
         $result = @mail($to, $subject, $htmlBody, $headers);
-        
-        if (ENVIRONMENT === 'development') {
-            error_log("Email attempted to $to: $subject (Result: " . ($result ? 'success' : 'failed') . ")");
-            // In development, always return true to simulate success
-            return true;
+
+        error_log("Email attempted to $to: $subject (Result: " . ($result ? 'success' : 'failed') . ")");
+        if (!$result) {
+            $this->lastError = 'mail() failed';
         }
-        
         return $result;
     }
 
