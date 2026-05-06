@@ -6267,7 +6267,6 @@ class _DashboardPageState extends State<DashboardPage>
   /// caller can open the Route dialog afterwards.
   Future<bool> _captureAndUploadReturnedDocument({
     required int trackingId,
-    int? activityId,
   }) async {
     // Show multi-capture dialog (same as final capture)
     final List<File>? capturedImages = await showDialog<List<File>>(
@@ -9041,7 +9040,7 @@ class _DashboardPageState extends State<DashboardPage>
                                     value: 'history',
                                     child: Text('History'),
                                   ),
-                                  PopupMenuItem<String>(
+                                  const PopupMenuItem<String>(
                                     value: 'delete',
                                     child: Text('Delete', style: TextStyle(color: Colors.red)),
                                   ),
@@ -9768,8 +9767,8 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
           : payrollFixedRoute;
 
       int idx = -1;
-      if (resolvedRouteStep != null && resolvedRouteStep! >= 0) {
-        idx = resolvedRouteStep!;
+      if (resolvedRouteStep != null && resolvedRouteStep >= 0) {
+        idx = resolvedRouteStep;
       }
       final holderIdx = resolvedCurrentHolder.isNotEmpty
           ? idxFromHint(resolvedCurrentHolder, activeRoute)
@@ -9792,7 +9791,7 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
         } else {
           payrollNextDept = activeRoute.last;
         }
-        deptCtrl.text = payrollNextDept!;
+        deptCtrl.text = payrollNextDept;
       }
     }
 
@@ -10161,7 +10160,6 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
     required String? docHash,
     required String? filePath,
     required String docTitle,
-    int? activityId,
   }) async {
     final confirm = await showDialog<bool>(
           context: context,
