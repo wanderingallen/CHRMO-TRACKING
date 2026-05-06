@@ -1,14 +1,14 @@
 {
   "project_info": {
-    "project_number": "654853931664",
-    "firebase_url": "https://chrmo-dta-capstone-default-rtdb.asia-southeast1.firebasedatabase.app",
-    "project_id": "chrmo-dta-capstone",
-    "storage_bucket": "chrmo-dta-capstone.firebasestorage.app"
+    "project_number": "1037241739258",
+    "firebase_url": "https://chrmo-21269-default-rtdb.firebaseio.com",
+    "project_id": "chrmo-21269",
+    "storage_bucket": "chrmo-21269.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:654853931664:android:20a059aca3f63068218e15",
+        "mobilesdk_app_id": "1:1037241739258:android:20a059aca3f63068218e15",
         "android_client_info": {
           "package_name": "com.example.flutter_application_7"
         }
@@ -16,7 +16,7 @@
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyBxjwf3XK6kuwTFqhOv6njSn56aVLVZ92c"
+          "current_key": "AIzaSyB3QZlJM50peeGc126ZcmRrpJsVK3qEmxQ"
         }
       ],
       "services": {

@@ -4777,6 +4777,41 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       request.fields['department'] = userDepartment;
       request.fields['fileTypeIcon'] = 'jpg'; // Default for batch uploads
 
+      // FIX: Generate a batch_id so multi-page uploads are linked together.
+      // Without this, merge_documents.php cannot find sibling pages and only
+      // displays the first page when clicking "View Document".
+      final batchId =
+          'BATCH_${DateTime.now().millisecondsSinceEpoch}_${_capturedDocuments.length}';
+      request.fields['batch_id'] = batchId;
+
+      // FIX (Issue 6): Parallelize OCR computation for all documents that need it.
+      // Previously each document's OCR was computed sequentially in the loop,
+      // causing 2+ photo uploads to take proportionally longer.
+      final ocrFutures = <int, Future<String>>{};
+      for (int i = 0; i < _capturedDocuments.length; i++) {
+        final doc = _capturedDocuments[i];
+        String existingOcr = '';
+        if (doc.pageTexts.isNotEmpty) {
+          existingOcr = doc.pageTexts.join('\n\n').trim();
+        } else {
+          existingOcr = doc.recognizedText.trim();
+        }
+        if (existingOcr.isEmpty || existingOcr == 'No text recognized yet') {
+          final filePath =
+              doc.filteredPath ?? doc.croppedPath ?? doc.imagePath;
+          ocrFutures[i] = _performOcrOnPage(filePath).then((v) => v.trim()).catchError((_) => '');
+        }
+      }
+      // Wait for all OCR jobs to complete in parallel
+      final ocrResults = <int, String>{};
+      if (ocrFutures.isNotEmpty) {
+        final entries = ocrFutures.entries.toList();
+        final results = await Future.wait(entries.map((e) => e.value));
+        for (int j = 0; j < entries.length; j++) {
+          ocrResults[entries[j].key] = results[j];
+        }
+      }
+
       // 3. Loop through all captured documents and add them as files
       for (int i = 0; i < _capturedDocuments.length; i++) {
         DocumentData doc = _capturedDocuments[i];
@@ -4801,19 +4836,17 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           ocrText = doc.recognizedText.trim();
         }
 
-        // If OCR was never computed for this captured image, compute it now
-        if (ocrText.isEmpty || ocrText == 'No text recognized yet') {
-          try {
-            final computed = await _performOcrOnPage(filePath);
-            ocrText = computed.trim();
+        // Use pre-computed parallel OCR result if available (Issue 6 fix)
+        if ((ocrText.isEmpty || ocrText == 'No text recognized yet') &&
+            ocrResults.containsKey(i)) {
+          ocrText = ocrResults[i] ?? '';
+          if (ocrText.isNotEmpty) {
             doc = doc.copyWith(
               recognizedText: ocrText,
               pageTexts:
                   ocrText.isNotEmpty ? <String>[ocrText] : const <String>[],
             );
             _capturedDocuments[i] = doc;
-          } catch (_) {
-            // Keep empty; server will store blank/placeholder
           }
         }
 
@@ -4824,6 +4857,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
         request.fields['mobile_timestamp[$i]'] = doc.mobileTimestamp;
         request.fields['doc_hash[$i]'] = doc.docHash;
+
+        // FIX: Send page_number so merge_documents.php can order and find all pages
+        request.fields['page_number[$i]'] = (i + 1).toString();
 
         // Send per-page OCR for multi-page search support
         if (doc.pageTexts.isNotEmpty) {

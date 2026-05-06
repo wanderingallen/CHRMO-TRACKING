@@ -72,10 +72,10 @@ Future<void> main() async {
     if (kIsWeb) {
       await Firebase.initializeApp(
         options: const FirebaseOptions(
-          apiKey: 'YOUR_API_KEY',
-          appId: 'YOUR_APP_ID',
-          messagingSenderId: 'YOUR_SENDER_ID',
-          projectId: 'YOUR_PROJECT_ID',
+          apiKey: 'AIzaSyB3QZlJM50peeGc126ZcmRrpJsVK3qEmxQ',
+          appId: '1:1037241739258:web:28ad395cae1cd9fb4be643',
+          messagingSenderId: '1037241739258',
+          projectId: 'chrmo-21269',
         ),
       );
     } else {

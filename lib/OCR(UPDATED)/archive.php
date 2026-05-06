@@ -544,8 +544,10 @@ if (isset($_GET['delete_id'])) {
 
 // Fetching document data
 $documents = [];
-if (!$__isAdmin && !empty($_SESSION['user_department'])) {
-    $__archDeptEsc = $connection->real_escape_string(trim($_SESSION['user_department']));
+// Some login paths historically stored department under different session keys; normalize here.
+$__sessionDept = (string)($_SESSION['user_department'] ?? ($_SESSION['department'] ?? ''));
+if (!$__isAdmin && trim($__sessionDept) !== '') {
+    $__archDeptEsc = $connection->real_escape_string(trim($__sessionDept));
     $__archDeptUpper = strtoupper($__archDeptEsc);
     // Check if the archived_by_department column exists (added by migration)
     $__hasAbdCol = false;
@@ -3327,12 +3329,18 @@ require_once 'user_profile_widget.php';
         const target = e.target;
         const button = target.closest('.action-btn');
         if (!button || !button.classList.contains('action-btn')) return; // do not prevent checkbox toggles or other native events
-        
+
+        // Only intercept clicks for row-level action buttons that declare a doc id.
+        // This prevents breaking native clicks for modal footer anchors like the Download button.
+        const docId = button.dataset.docId;
+        if (!docId) {
+          return;
+        }
+
         e.preventDefault();
         e.stopPropagation();
-        
-        const docId = button.dataset.docId;
-        const doc = documentsData.find(d => String(d.id) === docId); // Find by string ID
+
+        const doc = documentsData.find(d => String(d.id) === String(docId)); // Find by string ID
         if (!doc) return;
 
         if (button.classList.contains('preview-btn')) {
@@ -3355,18 +3363,13 @@ require_once 'user_profile_widget.php';
             if (fileIconEl) fileIconEl.className = 'fas ' + (iconMap[ext] || 'fa-file-pdf');
             if (fileTypeEl) fileTypeEl.textContent = ext.toUpperCase() + ' File';
 
-            // Wire download button
+            // Wire download button (always enabled; backend will validate availability)
             const archiveDlBtn = document.getElementById('archiveDownloadBtn');
             if (archiveDlBtn) {
-              if (doc.file_url) {
-                archiveDlBtn.href = doc.file_url.replace('&inline=1','') + '&dl=1';
-                archiveDlBtn.style.pointerEvents = 'auto';
-                archiveDlBtn.style.opacity = '1';
-              } else {
-                archiveDlBtn.removeAttribute('href');
-                archiveDlBtn.style.pointerEvents = 'none';
-                archiveDlBtn.style.opacity = '0.5';
-              }
+              const baseUrl = `api/archive_download.php?id=${encodeURIComponent(String(doc.id))}`;
+              archiveDlBtn.href = `${baseUrl}&dl=1&t=${Date.now()}`;
+              archiveDlBtn.style.pointerEvents = 'auto';
+              archiveDlBtn.style.opacity = '1';
             }
 
             const archiveTimelineActivityLog = document.getElementById('archiveTimelineActivityLog');

@@ -21,6 +21,27 @@ function firestore_upsert_document($collection, $documentId, array $fields)
         }
     }
     if (!$serviceAccountPath) {
+        $secureDir = __DIR__ . '/../../secure';
+        $jsonFiles = [];
+        if (is_dir($secureDir)) {
+            $globbed = glob($secureDir . '/*.json');
+            if (is_array($globbed)) {
+                $jsonFiles = $globbed;
+            }
+        }
+
+        if (!empty($jsonFiles)) {
+            // Prefer firebase admin SDK files when multiple are present.
+            usort($jsonFiles, function ($a, $b) {
+                $aScore = (stripos(basename($a), 'firebase-adminsdk') !== false) ? 0 : 1;
+                $bScore = (stripos(basename($b), 'firebase-adminsdk') !== false) ? 0 : 1;
+                if ($aScore !== $bScore) return $aScore <=> $bScore;
+                return strcmp($a, $b);
+            });
+            $serviceAccountPath = $jsonFiles[0];
+        }
+    }
+    if (!$serviceAccountPath) {
         error_log('firestore_upsert_document: service account JSON not found in secure/');
         return false;
     }
@@ -121,6 +142,26 @@ function firestore_delete_document($collection, $documentId)
         if (is_file($p)) {
             $serviceAccountPath = $p;
             break;
+        }
+    }
+    if (!$serviceAccountPath) {
+        $secureDir = __DIR__ . '/../../secure';
+        $jsonFiles = [];
+        if (is_dir($secureDir)) {
+            $globbed = glob($secureDir . '/*.json');
+            if (is_array($globbed)) {
+                $jsonFiles = $globbed;
+            }
+        }
+
+        if (!empty($jsonFiles)) {
+            usort($jsonFiles, function ($a, $b) {
+                $aScore = (stripos(basename($a), 'firebase-adminsdk') !== false) ? 0 : 1;
+                $bScore = (stripos(basename($b), 'firebase-adminsdk') !== false) ? 0 : 1;
+                if ($aScore !== $bScore) return $aScore <=> $bScore;
+                return strcmp($a, $b);
+            });
+            $serviceAccountPath = $jsonFiles[0];
         }
     }
     if (!$serviceAccountPath) {

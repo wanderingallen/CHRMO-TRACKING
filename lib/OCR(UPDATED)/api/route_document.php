@@ -161,6 +161,7 @@ try {
   $mobile_timestamp = isset($_POST['mobile_timestamp']) ? trim($_POST['mobile_timestamp']) : '';
   $type = isset($_POST['type']) ? trim($_POST['type']) : '';
   $current_holder = '';
+  $previous_holder = '';
 
   // Announcements are broadcast/acknowledge-only and should not be routed.
   if ($type !== '' && strpos(strtolower($type), 'announcement') !== false) {
@@ -191,20 +192,23 @@ try {
   // Optional explicit tracking id from client (dashboard/mobile recent activity)
   $tracking_id = isset($_POST['tracking_id']) ? trim($_POST['tracking_id']) : '';
 
-  // Auto-set payroll routing queue if not already provided
-  if ($isPayrollType && $routing_queue === '') {
-    // Determine current position in the fixed chain based on sender/receiver
-    $senderUpper = strtoupper($sender_department);
-    $receiverUpper = strtoupper($receiver_department);
+  // -- Always enforce fixed payroll route: HR -> CBO -> ACCOUNTING -> CAO -> CTO --
+  // Regardless of whether the client provided routing_queue, always validate
+  // the receiver is the correct next step in the fixed chain.
+  if ($isPayrollType) {
+    // Ensure routing_queue is always the canonical fixed chain
     $routing_queue = implode(',', $payrollFixedRoute);
 
-    // If the document is being routed from a department in the chain,
-    // validate the next stop matches the fixed route
-    $senderIdx = array_search($senderUpper, $payrollFixedRoute);
+    // NOTE: We do a preliminary enforcement using client sender_department here,
+    // but we will enforce again later using the authoritative previous_holder
+    // from the tracking row (prevents client bugs from skipping departments).
+    $senderUpper = strtoupper($sender_department);
+    $receiverUpper = strtoupper($receiver_department);
+    $senderIdx = array_search($senderUpper, $payrollFixedRoute, true);
     if ($senderIdx !== false && ($senderIdx + 1) < count($payrollFixedRoute)) {
       $expectedNext = $payrollFixedRoute[$senderIdx + 1];
-      // Override receiver to enforce fixed routing
       if ($receiverUpper !== $expectedNext) {
+        error_log("[route_document] Payroll enforcement (pre): corrected receiver from '$receiver_department' to '$expectedNext' (sender=$sender_department)");
         $receiver_department = $expectedNext;
       }
     }
@@ -532,6 +536,26 @@ try {
         }
       }
       $sel_prev->close();
+    }
+
+    // Enforce payroll routing based on the authoritative current holder in DB.
+    // This prevents cases where the client sends a wrong sender_department,
+    // which can cause jumps like CBO -> CAO (skipping ACCOUNTING).
+    if ($isPayrollType) {
+      $prevUpper = strtoupper(trim((string)$previous_holder));
+      $fallbackSenderUpper = strtoupper(trim((string)$sender_department));
+      $effectiveSenderUpper = $prevUpper !== '' ? $prevUpper : $fallbackSenderUpper;
+      $receiverUpper = strtoupper(trim((string)$receiver_department));
+      $senderIdx = array_search($effectiveSenderUpper, $payrollFixedRoute, true);
+      if ($senderIdx !== false && ($senderIdx + 1) < count($payrollFixedRoute)) {
+        $expectedNext = $payrollFixedRoute[$senderIdx + 1];
+        if ($receiverUpper !== $expectedNext) {
+          error_log("[route_document] Payroll enforcement (db): corrected receiver from '$receiver_department' to '$expectedNext' (prev_holder=$previous_holder, sender=$sender_department)");
+          $receiver_department = $expectedNext;
+        }
+      }
+      $routing_queue = implode(',', $payrollFixedRoute);
+      $current_holder = $receiver_department;
     }
     
     // Update ONLY: current_holder, department, status, and file-related fields
@@ -1020,10 +1044,75 @@ try {
     // best-effort only
   }
 
+  // Keep dashboards in sync: once routed, complete stale notifications for the previous holder.
+  // This prevents old department cards from remaining visible on mobile after web routing.
+  if ((int)$track_id > 0) {
+    try {
+      $staleDept = trim((string)$previous_holder);
+      if ($staleDept === '') {
+        $staleDept = trim((string)$sender_department);
+      }
+
+      if ($staleDept !== '' && strcasecmp($staleDept, (string)$receiver_department) !== 0) {
+        $normalizedStale = strtolower(trim($staleDept));
+        $notifIds = [];
+
+        if ($selOld = $conn->prepare(
+          "SELECT id FROM notifications WHERE tracking_id = ? AND (LOWER(TRIM(recipient_department)) = ? OR LOWER(TRIM(recipient_username)) = ?) AND (status IS NULL OR status <> 'completed')"
+        )) {
+          $selOld->bind_param('iss', $track_id, $normalizedStale, $normalizedStale);
+          if ($selOld->execute()) {
+            $oldRes = $selOld->get_result();
+            while ($oldRes && ($oldRow = $oldRes->fetch_assoc())) {
+              $nid = (int)($oldRow['id'] ?? 0);
+              if ($nid > 0) {
+                $notifIds[] = $nid;
+              }
+            }
+            if ($oldRes) { $oldRes->free(); }
+          }
+          $selOld->close();
+        }
+
+        if ($updOld = $conn->prepare(
+          "UPDATE notifications SET status = 'completed', doc_status = ?, current_holder = ?, end_location = ? WHERE tracking_id = ? AND (LOWER(TRIM(recipient_department)) = ? OR LOWER(TRIM(recipient_username)) = ?) AND (status IS NULL OR status <> 'completed')"
+        )) {
+          $docStatusForOld = (string)$status;
+          $curHolderForOld = (string)$current_holder;
+          $endForOld = (string)$end_location;
+          $updOld->bind_param('sssiss', $docStatusForOld, $curHolderForOld, $endForOld, $track_id, $normalizedStale, $normalizedStale);
+          $updOld->execute();
+          $updOld->close();
+        }
+
+        if (!empty($notifIds) && function_exists('firestore_upsert_document')) {
+          foreach ($notifIds as $nid) {
+            try {
+              firestore_upsert_document('notifications', (string)$nid, [
+                'status' => 'completed',
+                'doc_status' => (string)$status,
+                'current_holder' => (string)$current_holder,
+                'end_location' => (string)$end_location,
+                'tracking_id' => (int)$track_id,
+                'updatedAt' => (int)round(microtime(true) * 1000),
+              ]);
+            } catch (Throwable $t) {
+              // ignore
+            }
+          }
+        }
+      }
+    } catch (Throwable $t) {
+      // ignore
+    }
+  }
+
   // ─── Sequential Memo Routing Queue Auto-Advance ───
   // After updating a tracking row, check if there's a routing_queue.
-  // If the current status is Completed/In Review and there's a next department
-  // in the queue, auto-advance the holder to that department.
+  // If the current department has COMPLETED processing and there's a next
+  // department in the queue, auto-advance the holder to that department.
+  // IMPORTANT: Do NOT advance on intermediate statuses like Pending, In Review,
+  // or Received — only after the department explicitly marks work as done.
   if ($track_id) {
     try {
       @$conn->query("ALTER TABLE tracking ADD COLUMN IF NOT EXISTS routing_queue TEXT DEFAULT NULL");
@@ -1043,13 +1132,23 @@ try {
             if ($rq !== '') {
               $depts = array_map('trim', explode(',', $rq));
               // If current holder matches the current step dept and status indicates
-              // the department is done (Completed or routing happened), advance
+              // the department is DONE (Completed/Forwarded/Approved), advance.
               if ($step < count($depts) - 1) {
                 $expectedDept = $depts[$step] ?? '';
-                // Only auto-advance when holder is aligned and this request is NOT an active routing action.
-                // Prevents route cascade like CBO->ACCOUNTING->CAO in a single request.
                 $holderMatchesExpected = (strcasecmp($curHolder, $expectedDept) === 0);
-                $canAutoAdvance = ($holderMatchesExpected && !$is_routing);
+
+                // FIX: Only auto-advance when the department has FINISHED processing.
+                // Statuses like 'pending', 'in review', 'received' mean the dept is
+                // still working on it. Without this guard, receiving a document
+                // (which sets status='In Review' via a non-routing call) would
+                // immediately push it to the next department — e.g. ACCOUNTING→CAO.
+                $completedStatuses = ['completed', 'forwarded', 'approved', 'done'];
+                $isFinished = in_array($curStatus, $completedStatuses);
+                $canAutoAdvance = ($holderMatchesExpected && !$is_routing && $isFinished);
+
+                if (!$canAutoAdvance && $holderMatchesExpected && !$is_routing && !$isFinished) {
+                  error_log("[route_document] AUTO-ADVANCE BLOCKED: id=$track_id step=$step dept=$curHolder status='$curStatus' — waiting for Completed/Forwarded before advancing");
+                }
                 if ($canAutoAdvance) {
                   $nextStep = $step + 1;
                   $nextDept = $depts[$nextStep] ?? '';

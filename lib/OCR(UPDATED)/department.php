@@ -692,7 +692,7 @@ $connection->close();
           <i class="fas fa-chart-bar"></i>
           <span>Status Reports</span>
         </a>
-        <a href="archive.php".php" class="menu-item">
+        <a href="archive.php" class="menu-item">
           <i class="fas fa-archive"></i>
           <span>Archived Records</span>
         </a>

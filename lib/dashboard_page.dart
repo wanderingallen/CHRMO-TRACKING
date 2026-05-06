@@ -47,7 +47,11 @@ class _DashboardPageState extends State<DashboardPage>
     with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   int _currentIndex = 0;
   String username = 'Loading...';
-  String email = 'Loading...';
+  String email = '';
+  String department = '';
+  String role = '';
+
+  bool _isLoading = false;
   String _userDepartment = '';
   String searchQuery = '';
   final bool _showSearch = false;
@@ -466,6 +470,94 @@ class _DashboardPageState extends State<DashboardPage>
     }
   }
 
+  Future<void> _archiveDocumentFromServer({
+    required String? trackingId,
+    required String? mobileTimestamp,
+    required String? docHash,
+    required String? filePath,
+    required String docTitle,
+    int? activityId,
+  }) async {
+    final confirm = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Archive Document'),
+            content: Text('Are you sure you want to archive "$docTitle"?'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF6868AC)),
+                child:
+                    const Text('Archive', style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+
+    if (!confirm || !mounted) return;
+
+    setState(() => _isLoading = true);
+    try {
+      final root = await _getServerRoot();
+      if (root == null) return;
+
+      String resolvedTid = trackingId?.trim() ?? '';
+      if (resolvedTid.isEmpty) {
+        resolvedTid = (await _resolveTrackingIdForAction(
+              actionLabel: 'Archive',
+              trackingId: null,
+              mobileTimestamp: mobileTimestamp,
+              docHash: docHash,
+              filePath: filePath,
+            )) ??
+            '';
+      }
+
+      if (resolvedTid.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Cannot archive: document ID not found')));
+        }
+        return;
+      }
+
+      final uri = Uri.parse('$root/lib/OCR(UPDATED)/api/archive_transfer.php');
+      final response = await http.post(uri, body: {
+        'action': 'transfer',
+        'tracking_id': resolvedTid,
+        'delete_from_tracking': 'true',
+      }).timeout(const Duration(seconds: 15));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['success'] == true) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Document archived successfully')),
+            );
+            _fetchRecentActivity();
+          }
+          return;
+        }
+      }
+      throw Exception(response.body);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Archive failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
   // Helpers to split activity into "received" vs "user's own" actions
   List<Map<String, dynamic>> _getReceivedActivityItems() {
     final current = username.trim().toLowerCase();
@@ -722,6 +814,81 @@ class _DashboardPageState extends State<DashboardPage>
         // listener error silenced
       },
     );
+  }
+
+  Future<void> _confirmDeleteDocument({
+    required String? trackingId,
+    required String docTitle,
+  }) async {
+    if (trackingId == null || trackingId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Cannot delete: missing tracking ID')),
+      );
+      return;
+    }
+
+    final bool? confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Document'),
+        content: Text('Are you sure you want to delete "$docTitle"? This action cannot be undone.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      await _deleteDocument(trackingId);
+    }
+  }
+
+  Future<void> _deleteDocument(String trackingId) async {
+    try {
+      final root = await _getServerRoot();
+      if (root == null) return;
+
+      final response = await http.post(
+        Uri.parse('$root/lib/OCR(UPDATED)/api/document_actions.php'),
+        body: {
+          'action': 'delete_document',
+          'tracking_id': trackingId,
+          'username': username,
+          'department': _userDepartment,
+        },
+      ).timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['success'] == true) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Document deleted successfully')),
+            );
+            // Refresh the dashboard
+            _fetchRecentActivity();
+          }
+        } else {
+          throw data['error'] ?? 'Unknown error';
+        }
+      } else {
+        throw 'Server returned ${response.statusCode}';
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error deleting document: $e')),
+        );
+      }
+    }
   }
 
   Future<void> _showDocumentHistoryDialog({
@@ -1310,13 +1477,16 @@ class _DashboardPageState extends State<DashboardPage>
                                             apiUrl.trim().isNotEmpty
                                                 ? apiUrl
                                                 : path);
-                                        final showImage = isImage(path);
-                                        final lowerPath = path.toLowerCase();
-                                        final isPdf =
-                                            lowerPath.endsWith('.pdf') ||
-                                                (name
-                                                    .toLowerCase()
-                                                    .endsWith('.pdf'));
+                                        final imageProbe =
+                                            path.trim().isNotEmpty ? path : fullUrl;
+                                        final showImage = isImage(imageProbe);
+                                        final lowerProbe = (path.trim().isNotEmpty
+                                                ? path
+                                                : (name.trim().isNotEmpty
+                                                    ? name
+                                                    : fullUrl))
+                                            .toLowerCase();
+                                        final isPdf = lowerProbe.endsWith('.pdf');
 
                                         return Card(
                                           elevation: 2,
@@ -1711,7 +1881,7 @@ class _DashboardPageState extends State<DashboardPage>
                                                             child:
                                                                 OutlinedButton
                                                                     .icon(
-                                                              onPressed: path
+                                                              onPressed: fullUrl
                                                                       .trim()
                                                                       .isEmpty
                                                                   ? null
@@ -1805,12 +1975,34 @@ class _DashboardPageState extends State<DashboardPage>
                                                             child:
                                                                 ElevatedButton
                                                                     .icon(
-                                                              onPressed: path
+                                                              onPressed: fullUrl
                                                                       .trim()
                                                                       .isEmpty
                                                                   ? null
-                                                                  : () => _openUrl(
-                                                                      fullUrl),
+                                                                  : () async {
+                                                                      try {
+                                                                        if (isPdf) {
+                                                                          await _openPdf(
+                                                                            fullUrl,
+                                                                            title: display,
+                                                                          );
+                                                                          return;
+                                                                        }
+                                                                        if (showImage) {
+                                                                          await _previewImage(
+                                                                            fullUrl,
+                                                                            localFallbackName:
+                                                                                display,
+                                                                            recipientDepartment:
+                                                                                dept,
+                                                                          );
+                                                                          return;
+                                                                        }
+                                                                        await _openUrl(fullUrl);
+                                                                      } catch (_) {
+                                                                        await _openUrl(fullUrl);
+                                                                      }
+                                                                    },
                                                               icon: const Icon(
                                                                   Icons
                                                                       .open_in_new,
@@ -2787,6 +2979,9 @@ class _DashboardPageState extends State<DashboardPage>
                     'CACCO',
                     'CADO',
                     'CMO',
+                    'ACCOUNTING',
+                    'HR',
+                    'IT',
                     for (final u in users)
                       (u['department'] ?? '').toString().trim().toUpperCase(),
                   }..removeWhere((e) => e.trim().isEmpty);
@@ -4079,7 +4274,14 @@ class _DashboardPageState extends State<DashboardPage>
           // Refresh the activity feed
           _fetchRecentActivity();
         } else {
-          throw Exception(data['error'] ?? 'Upload failed');
+          final err = (data is Map)
+              ? (data['details']?.toString().trim().isNotEmpty == true
+                  ? data['details'].toString()
+                  : (data['error']?.toString() ?? data['message']?.toString()))
+              : null;
+          throw Exception((err == null || err.trim().isEmpty)
+              ? 'Upload failed'
+              : err);
         }
       } else {
         throw Exception('Server error: ${response.statusCode}');
@@ -4871,19 +5073,19 @@ class _DashboardPageState extends State<DashboardPage>
         if (isForCurrentUser(m, user)) {
           return true;
         }
-        final rd = normalizeDepartment(
+        final holder = normalizeDepartment(
+          (m['current_holder'] ?? m['currentHolder'] ?? '').toString(),
+        );
+        final recipient = normalizeDepartment(
           (m['recipient_department'] ??
                   m['recipientDepartment'] ??
                   m['recipient_dept'] ??
                   m['dept'] ??
-                  m['current_holder'] ??
-                  m['currentHolder'] ??
-                  m['end_location'] ??
-                  m['endLocation'] ??
                   '')
               .toString(),
         );
         final ud = normalizeDepartment(dept);
+        final rd = holder.isNotEmpty ? holder : recipient;
         if (rd.isNotEmpty && rd == ud) {
           return true;
         }
@@ -4895,9 +5097,7 @@ class _DashboardPageState extends State<DashboardPage>
             .toString()
             .trim()
             .toLowerCase();
-        if (docStatus == 'completed' ||
-            docStatus == 'archived' ||
-            docStatus == 'approved') {
+        if (docStatus == 'archived') {
           return false;
         }
 
@@ -6067,6 +6267,7 @@ class _DashboardPageState extends State<DashboardPage>
   /// caller can open the Route dialog afterwards.
   Future<bool> _captureAndUploadReturnedDocument({
     required int trackingId,
+    int? activityId,
   }) async {
     // Show multi-capture dialog (same as final capture)
     final List<File>? capturedImages = await showDialog<List<File>>(
@@ -7806,12 +8007,23 @@ class _DashboardPageState extends State<DashboardPage>
         final decoded = jsonDecode(body);
         if (decoded is Map) {
           ok = ok && (decoded['success'] == true);
-          msg = decoded['message']?.toString() ??
-              decoded['error']?.toString() ??
-              msg;
+          final details = decoded['details']?.toString();
+          final error = decoded['error']?.toString();
+          final message = decoded['message']?.toString();
+          msg = (details != null && details.trim().isNotEmpty)
+              ? details
+              : ((error != null && error.trim().isNotEmpty)
+                  ? error
+                  : ((message != null && message.trim().isNotEmpty)
+                      ? message
+                      : msg));
         }
       } catch (_) {
         if (!ok && body.trim().isNotEmpty) msg = body.trim();
+      }
+
+      if (!ok && streamed.statusCode >= 400) {
+        msg = 'HTTP ${streamed.statusCode}: $msg';
       }
 
       for (final f in materialized) {
@@ -8592,64 +8804,6 @@ class _DashboardPageState extends State<DashboardPage>
                             ),
                           ),
                           if (!isAnnouncement) ...[
-                            // Icon-only capture button for returned documents
-                            if (serverStatus == 'returned') ...[
-                              const SizedBox(width: 6),
-                              SizedBox(
-                                width: 40,
-                                height: 36,
-                                child: IconButton(
-                                  onPressed: () async {
-                                    final tid = int.tryParse(
-                                        (normalizedTrackingId ?? '').trim());
-                                    if (tid == null || tid <= 0) {
-                                      if (mounted) {
-                                        ScaffoldMessenger.of(context)
-                                            .showSnackBar(const SnackBar(
-                                                content: Text(
-                                                    'Cannot capture: missing tracking info')));
-                                      }
-                                      return;
-                                    }
-                                    // Capture → OCR → edit → upload (does NOT mark Completed)
-                                    final ok =
-                                        await _captureAndUploadReturnedDocument(
-                                      trackingId: tid,
-                                      activityId: id,
-                                    );
-                                    if (!ok || !mounted) return;
-                                    // After successful capture, open Route dialog
-                                    await _openRouteDialogWithDetails(
-                                      initialReceiverDept:
-                                          recipientDepartment ?? '',
-                                      docType: (docType ?? title),
-                                      fileName: title,
-                                      filePath: resolvedFilePath,
-                                      mobileTimestamp:
-                                          normalizedMobileTimestamp,
-                                      docHash: normalizedDocHash,
-                                      trackingId: normalizedTrackingId,
-                                      activityId: id,
-                                      endLocation: normalizedEndLocation,
-                                      currentHolder: effectiveHolderDept,
-                                    );
-                                  },
-                                  icon: Icon(Icons.camera_alt,
-                                      size: 20, color: Colors.orange.shade700),
-                                  tooltip: 'Capture updated document',
-                                  padding: EdgeInsets.zero,
-                                  constraints: const BoxConstraints(),
-                                  style: IconButton.styleFrom(
-                                    backgroundColor: Colors.orange.shade50,
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(8),
-                                      side: BorderSide(
-                                          color: Colors.orange.shade300),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ],
                             const SizedBox(width: 6),
                             // Route/Update (second) - memos only
                             Expanded(
@@ -8840,13 +8994,19 @@ class _DashboardPageState extends State<DashboardPage>
                                         docTitle: title,
                                       );
                                       break;
-                                    case 'comment':
-                                      _showViewCommentsDialog(
+                                    case 'archive':
+                                      _archiveDocumentFromServer(
                                         trackingId: normalizedTrackingId,
-                                        mobileTimestamp:
-                                            normalizedMobileTimestamp,
+                                        mobileTimestamp: normalizedMobileTimestamp,
                                         docHash: normalizedDocHash,
                                         filePath: resolvedFilePath,
+                                        docTitle: title,
+                                        activityId: id,
+                                      );
+                                      break;
+                                    case 'delete':
+                                      _confirmDeleteDocument(
+                                        trackingId: normalizedTrackingId,
                                         docTitle: title,
                                       );
                                       break;
@@ -8872,11 +9032,16 @@ class _DashboardPageState extends State<DashboardPage>
                                     enabled: alreadyReceived,
                                     child: const Text('Edit / Update'),
                                   ),
+                                  PopupMenuItem<String>(
+                                    value: 'archive',
+                                    enabled: alreadyReceived && (atEndLocation || serverStatus == 'completed'),
+                                    child: const Text('Archive'),
+                                  ),
                                   const PopupMenuItem<String>(
                                     value: 'history',
                                     child: Text('History'),
                                   ),
-                                  const PopupMenuItem<String>(
+                                  PopupMenuItem<String>(
                                     value: 'delete',
                                     child: Text('Delete', style: TextStyle(color: Colors.red)),
                                   ),
@@ -9322,6 +9487,71 @@ class _DashboardPageState extends State<DashboardPage>
 }
 
 extension _RecentUploadOpeners on _RecentUploadPageState {
+  Future<void> _fetchRecentActivity() async {
+    if (!mounted) return;
+    setState(() {
+      _changed = true;
+    });
+  }
+
+  Future<String?> _resolveTrackingIdForAction({
+    required String actionLabel,
+    required String? trackingId,
+    required String? mobileTimestamp,
+    required String? docHash,
+    required String? filePath,
+  }) async {
+    String? normalize(String? v) {
+      if (v == null) return null;
+      final t = v.trim();
+      return t.isEmpty ? null : t;
+    }
+
+    final tId = normalize(trackingId);
+    final mt = normalize(mobileTimestamp);
+    final dh = normalize(docHash);
+    final fp = normalize(filePath);
+
+    if (tId != null) {
+      final parsed = int.tryParse(tId);
+      if (parsed != null && parsed > 0) return tId;
+    }
+    if (mt == null && dh == null && fp == null) return null;
+
+    final root = await _getServerRoot();
+    if (root == null) return null;
+
+    final uri = Uri.parse('$root/lib/OCR(UPDATED)/tracking.php').replace(
+      queryParameters: {
+        'action': 'resolve_identity',
+        if (mt != null) 'mobile_timestamp': mt,
+        if (dh != null) 'doc_hash': dh,
+        if (fp != null) 'file_path': fp,
+      },
+    );
+
+    try {
+      final resp = await http.get(uri).timeout(const Duration(seconds: 8));
+      if (resp.statusCode != 200) {
+        return null;
+      }
+      final data = jsonDecode(resp.body);
+      String? resolved;
+      if (data is Map) {
+        if (data['tracking_id'] != null) {
+          resolved = data['tracking_id'].toString();
+        } else if (data['doc'] is Map && (data['doc'] as Map)['id'] != null) {
+          resolved = (data['doc'] as Map)['id'].toString();
+        } else if (data['doc_id'] != null) {
+          resolved = data['doc_id'].toString();
+        }
+      }
+      return normalize(resolved);
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<Map<String, dynamic>?> _fetchRoutingMetaRecent({
     String? trackingId,
     String? mobileTimestamp,
@@ -9476,6 +9706,14 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
     final deptCtrl = TextEditingController();
     final typeCtrl = TextEditingController(text: docType);
 
+    // ── Fixed Payroll Routing: HR → CBO → ACCOUNTING → CAO → CTO ──
+    const payrollFixedRoute = ['HR', 'CBO', 'ACCOUNTING', 'CAO', 'CTO'];
+    bool isPayrollLocked = false;
+    String? payrollNextDept;
+    String resolvedCurrentHolder = initialReceiverDept.trim().toUpperCase();
+    int? resolvedRouteStep;
+    List<String> resolvedRoutingQueue = List<String>.from(payrollFixedRoute);
+
     // Resolve the true end_location from the tracking row (do not trust notification payload)
     String resolvedEnd = (endLocation ?? '').trim();
     String resolvedType = docType.trim();
@@ -9490,7 +9728,26 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
       if (endFromDb.isNotEmpty) resolvedEnd = endFromDb;
       final typeFromDb = (meta['type'] ?? '').toString().trim();
       if (typeFromDb.isNotEmpty) resolvedType = typeFromDb;
+      final holderFromDb =
+          (meta['current_holder'] ?? meta['currentHolder'] ?? '')
+              .toString()
+              .trim()
+              .toUpperCase();
+      if (holderFromDb.isNotEmpty) resolvedCurrentHolder = holderFromDb;
+      final routeStepRaw = (meta['route_step'] ?? '').toString().trim();
+      final parsedStep = int.tryParse(routeStepRaw);
+      if (parsedStep != null && parsedStep >= 0) resolvedRouteStep = parsedStep;
+      final rqRaw = (meta['routing_queue'] ?? '').toString().trim();
+      if (rqRaw.isNotEmpty) {
+        final parts = rqRaw
+            .split(',')
+            .map((e) => e.trim().toUpperCase())
+            .where((e) => e.isNotEmpty)
+            .toList();
+        if (parts.isNotEmpty) resolvedRoutingQueue = parts;
+      }
     }
+
     if (resolvedType.isNotEmpty) typeCtrl.text = resolvedType;
     final lockedEndLocation = resolvedEnd.trim().isNotEmpty
         ? resolvedEnd.trim()
@@ -9511,8 +9768,8 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
           : payrollFixedRoute;
 
       int idx = -1;
-      if (resolvedRouteStep != null && resolvedRouteStep >= 0) {
-        idx = resolvedRouteStep;
+      if (resolvedRouteStep != null && resolvedRouteStep! >= 0) {
+        idx = resolvedRouteStep!;
       }
       final holderIdx = resolvedCurrentHolder.isNotEmpty
           ? idxFromHint(resolvedCurrentHolder, activeRoute)
@@ -9535,7 +9792,7 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
         } else {
           payrollNextDept = activeRoute.last;
         }
-        deptCtrl.text = payrollNextDept;
+        deptCtrl.text = payrollNextDept!;
       }
     }
 
@@ -9591,26 +9848,68 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
                   return Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      DropdownButtonFormField<String>(
-                        initialValue: depts.contains(deptCtrl.text)
-                            ? deptCtrl.text
-                            : null,
-                        items: depts
-                            .map(
-                              (d) => DropdownMenuItem<String>(
-                                value: d,
-                                child: Text(d.isNotEmpty ? d : 'Unknown'),
+                      if (isPayrollLocked && payrollNextDept != null) ...[
+                        // Payroll: show locked fixed route indicator
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 14),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF0F0FF),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                                color: const Color(0xFF6868AC), width: 1),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.lock_outline,
+                                  size: 18, color: Color(0xFF6868AC)),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Next: $payrollNextDept',
+                                      style: const TextStyle(
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.w700,
+                                          color: Color(0xFF6868AC)),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      'Payroll fixed route: ${(resolvedRoutingQueue.isNotEmpty ? resolvedRoutingQueue : payrollFixedRoute).join(' → ')}',
+                                      style: TextStyle(
+                                          fontSize: 11,
+                                          color: Colors.grey.shade600),
+                                    ),
+                                  ],
+                                ),
                               ),
-                            )
-                            .toList(),
-                        onChanged: (v) {
-                          if (v == null) return;
-                          selectDept(v);
-                        },
-                        decoration: const InputDecoration(
-                          labelText: 'Next Department',
+                            ],
+                          ),
                         ),
-                      ),
+                      ] else ...[
+                        DropdownButtonFormField<String>(
+                          initialValue: depts.contains(deptCtrl.text)
+                              ? deptCtrl.text
+                              : null,
+                          items: depts
+                              .map(
+                                (d) => DropdownMenuItem<String>(
+                                  value: d,
+                                  child: Text(d.isNotEmpty ? d : 'Unknown'),
+                                ),
+                              )
+                              .toList(),
+                          onChanged: (v) {
+                            if (v == null) return;
+                            selectDept(v);
+                          },
+                          decoration: const InputDecoration(
+                            labelText: 'Next Department',
+                          ),
+                        ),
+                      ],
                     ],
                   );
                 },
@@ -9726,6 +10025,11 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
         'next_department': nextDepartment,
         'end_location': endLocation,
       };
+      // For payroll documents, always pass the fixed routing queue so the
+      // server enforces HR → CBO → ACCOUNTING → CAO → CTO.
+      if (type.toLowerCase().contains('payroll')) {
+        payload['routing_queue'] = 'HR,CBO,ACCOUNTING,CAO,CTO';
+      }
       if (docHash?.trim().isNotEmpty ?? false) {
         payload['doc_hash'] = docHash!.trim();
       }
@@ -9857,6 +10161,7 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
     required String? docHash,
     required String? filePath,
     required String docTitle,
+    int? activityId,
   }) async {
     final confirm = await showDialog<bool>(
           context: context,
@@ -10488,6 +10793,8 @@ class _RecentUploadPageState extends State<RecentUploadPage> {
   final Set<String> _deletedItemIds = {}; // Track deleted item IDs
   static const String _deletedItemsKey = 'deleted_recent_upload_items';
   bool _changed = false; // if true, caller should refresh dashboard
+
+  bool _isLoading = false;
 
   bool _selectionMode = false;
   final Set<String> _selectedIds = {};

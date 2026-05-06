@@ -232,14 +232,14 @@
   import { getFirestore, collection, onSnapshot } from "https://www.gstatic.com/firebasejs/12.6.0/firebase-firestore.js";
 
   const firebaseConfig = {
-    apiKey: <?= json_encode(getenv('FIREBASE_API_KEY') ?: 'ROTATED_AND_STORE_OUTSIDE_SOURCE_CONTROL') ?>,
-    authDomain: "chrmo-dta-capstone.firebaseapp.com",
-    databaseURL: "https://chrmo-dta-capstone-default-rtdb.asia-southeast1.firebasedatabase.app",
-    projectId: "chrmo-dta-capstone",
-    storageBucket: "chrmo-dta-capstone.firebasestorage.app",
-    messagingSenderId: "654853931664",
-    appId: "1:654853931664:web:2ff43fa7891ab848218e15",
-    measurementId: "G-8T4VTXZQNE"
+    apiKey: <?= json_encode(getenv('FIREBASE_API_KEY') ?: 'AIzaSyB3QZlJM50peeGc126ZcmRrpJsVK3qEmxQ') ?>,
+    authDomain: "chrmo-21269.firebaseapp.com",
+    databaseURL: "https://chrmo-21269-default-rtdb.firebaseio.com",
+    projectId: "chrmo-21269",
+    storageBucket: "chrmo-21269.firebasestorage.app",
+    messagingSenderId: "1037241739258",
+    appId: "1:1037241739258:web:28ad395cae1cd9fb4be643",
+    measurementId: "G-RVK37NKG1W"
   };
 
   const app = initializeApp(firebaseConfig);

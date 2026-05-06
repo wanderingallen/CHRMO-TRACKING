@@ -1,4 +1,8 @@
 import 'package:flutter/material.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart'; // For date formatting
 import 'package:file_picker/file_picker.dart'; // For actual file picking in New Archive Modal
@@ -59,98 +63,73 @@ class _ArchivePageState extends State<ArchivePage>
   ];
 
   // Sample archived documents data
-  final List<ArchivedDocument> _allArchivedDocuments = [
-    ArchivedDocument(
-        id: 'ARC001',
-        name: 'Q1 Financial Report',
-        department: 'Finance',
-        type: 'Report',
-        status: 'Archived',
-        date: '2025-05-15',
-        size: '2.3 MB',
-        fileType: 'pdf'),
-    ArchivedDocument(
-        id: 'ARC002',
-        name: 'Employee Handbook',
-        department: 'Human Resources',
-        type: 'Policy',
-        status: 'Archived',
-        date: '2025-04-28',
-        size: '1.8 MB',
-        fileType: 'doc'),
-    ArchivedDocument(
-        id: 'ARC003',
-        name: 'Project Alpha Contract',
-        department: 'Administration',
-        type: 'Contract',
-        status: 'Archived',
-        date: '2025-03-20',
-        size: '0.5 MB',
-        fileType: 'docx'),
-    ArchivedDocument(
-        id: 'ARC004',
-        name: 'Payroll Records March',
-        department: 'Finance',
-        type: 'Payroll',
-        status: 'Archived',
-        date: '2025-03-10',
-        size: '5.1 MB',
-        fileType: 'xls'),
-    ArchivedDocument(
-        id: 'ARC005',
-        name: 'CHRMO Policy Update',
-        department: 'Human Resources',
-        type: 'Policy',
-        status: 'Archived',
-        date: '2025-02-01',
-        size: '1.2 MB',
-        fileType: 'pdf'),
-    ArchivedDocument(
-        id: 'ARC006',
-        name: 'Annual Budget 2024',
-        department: 'Finance',
-        type: 'Spreadsheet',
-        status: 'Archived',
-        date: '2025-01-25',
-        size: '3.9 MB',
-        fileType: 'xlsx'),
-    ArchivedDocument(
-        id: 'ARC007',
-        name: 'Department Meeting Minutes',
-        department: 'Administration',
-        type: 'Memo',
-        status: 'Archived',
-        date: '2025-01-10',
-        size: '0.2 MB',
-        fileType: 'txt'),
-    ArchivedDocument(
-        id: 'ARC008',
-        name: 'Office Renovation Plan',
-        department: 'Administration',
-        type: 'Image',
-        status: 'Archived',
-        date: '2024-12-05',
-        size: '0.8 MB',
-        fileType: 'jpg'),
-    ArchivedDocument(
-        id: 'ARC009',
-        name: 'Q4 Performance Review',
-        department: 'Human Resources',
-        type: 'Report',
-        status: 'Archived',
-        date: '2024-11-18',
-        size: '2.1 MB',
-        fileType: 'pdf'),
-    ArchivedDocument(
-        id: 'ARC010',
-        name: 'Vendor Agreement',
-        department: 'Finance',
-        type: 'Contract',
-        status: 'Archived',
-        date: '2024-10-30',
-        size: '0.7 MB',
-        fileType: 'doc'),
-  ];
+  final List<ArchivedDocument> _allArchivedDocuments = [];
+  bool _isLoading = false;
+
+  Future<void> _fetchArchivedDocuments() async {
+    if (!mounted) return;
+    setState(() => _isLoading = true);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final dept = prefs.getString('user_department') ?? '';
+      final root = prefs.getString('server_root') ?? 'http://localhost/CHRMO-TRACKING-main';
+      
+      final uri = Uri.parse('$root/lib/OCR(UPDATED)/api/archive_transfer.php').replace(queryParameters: {
+        'action': 'list_archived',
+        'department': dept,
+      });
+      
+      final response = await http.get(uri).timeout(const Duration(seconds: 15));
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['success'] == true) {
+          final List list = data['archived'] ?? [];
+          setState(() {
+            _allArchivedDocuments.clear();
+            _allArchivedDocuments.addAll(list.map((m) => ArchivedDocument(
+              id: m['id']?.toString() ?? '',
+              name: m['name'] ?? '',
+              department: m['department'] ?? '',
+              type: m['type'] ?? '',
+              status: m['status'] ?? '',
+              date: m['date'] ?? '',
+              size: m['size'] ?? '',
+              fileType: m['fileType'] ?? 'pdf',
+            )));
+            _filterDocuments();
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Error fetching archived docs: $e');
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _downloadDocument(ArchivedDocument doc) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final root = prefs.getString('server_root') ?? 'http://localhost/CHRMO-TRACKING-main';
+      final url = Uri.parse('$root/lib/OCR(UPDATED)/api/archive_download.php?id=${doc.id}&dl=1');
+      
+      if (await canLaunchUrl(url)) {
+        await launchUrl(url, mode: LaunchMode.externalApplication);
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Could not launch download URL')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e')),
+        );
+      }
+    }
+  }
 
   List<ArchivedDocument> _filteredArchivedDocuments = [];
   int _currentPage = 1;
@@ -173,6 +152,7 @@ class _ArchivePageState extends State<ArchivePage>
     ));
 
     _filterDocuments(); // Initial filtering
+    _fetchArchivedDocuments(); // Load real data
   }
 
   @override
@@ -368,11 +348,7 @@ class _ArchivePageState extends State<ArchivePage>
                       TextButton(
                         onPressed: () {
                           Navigator.pop(context);
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                                content: Text(
-                                    'Downloading ${doc.name} (simulated)')),
-                          );
+                          _downloadDocument(doc);
                         },
                         style: TextButton.styleFrom(
                           foregroundColor: const Color(0xFF6868AC),
@@ -494,44 +470,65 @@ class _ArchivePageState extends State<ArchivePage>
     }
   }
 
-  Future<void> _confirmRestoreDocument(String docId) async {
-    final docToRestore =
-        _allArchivedDocuments.firstWhere((doc) => doc.id == docId);
-    final bool confirm = await showDialog(
+  Future<void> _restoreDocument(String docId) async {
+    final docToRestore = _allArchivedDocuments.firstWhere((doc) => doc.id == docId);
+    final confirm = await showDialog<bool>(
           context: context,
-          builder: (BuildContext context) {
-            return AlertDialog(
-              title: const Text('Confirm Restore'),
-              content: Text(
-                  'Are you sure you want to restore "${docToRestore.name}"?'),
-              actions: <Widget>[
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(false),
-                  child: const Text('Cancel'),
-                ),
-                ElevatedButton(
-                  onPressed: () => Navigator.of(context).pop(true),
-                  style:
-                      ElevatedButton.styleFrom(backgroundColor: Colors.green),
-                  child: const Text('Restore',
-                      style: TextStyle(color: Colors.white)),
-                ),
-              ],
-            );
-          },
+          builder: (context) => AlertDialog(
+            title: const Text('Restore Document'),
+            content: Text(
+                'Are you sure you want to restore "${docToRestore.name}" back to Tracking?'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(context, true),
+                style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF6868AC)),
+                child: const Text('Restore', style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          ),
         ) ??
         false;
 
     if (confirm) {
-      setState(() {
-        _allArchivedDocuments.removeWhere((doc) => doc.id == docId);
-        _filterDocuments(); // Re-filter after restoration
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content:
-                Text('Document "${docToRestore.name}" restored successfully!')),
-      );
+      setState(() => _isLoading = true);
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final root = prefs.getString('server_root') ?? 'http://localhost/CHRMO-TRACKING-main';
+        
+        final response = await http.post(
+          Uri.parse('$root/lib/OCR(UPDATED)/api/archive_transfer.php'),
+          body: {
+            'action': 'restore',
+            'id': docId,
+          },
+        ).timeout(const Duration(seconds: 15));
+        
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          if (data['success'] == true) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Document "${docToRestore.name}" restored successfully!')),
+              );
+              _fetchArchivedDocuments(); // Refresh list
+            }
+            return;
+          }
+        }
+        throw Exception('Failed to restore document');
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Error: $e')),
+          );
+        }
+      } finally {
+        if (mounted) setState(() => _isLoading = false);
+      }
     }
   }
 
