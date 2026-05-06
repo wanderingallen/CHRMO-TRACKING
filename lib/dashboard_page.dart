@@ -6067,7 +6067,6 @@ class _DashboardPageState extends State<DashboardPage>
   /// caller can open the Route dialog afterwards.
   Future<bool> _captureAndUploadReturnedDocument({
     required int trackingId,
-    int? activityId,
   }) async {
     // Show multi-capture dialog (same as final capture)
     final List<File>? capturedImages = await showDialog<List<File>>(
@@ -8877,9 +8876,9 @@ class _DashboardPageState extends State<DashboardPage>
                                     value: 'history',
                                     child: Text('History'),
                                   ),
-                                  const PopupMenuItem<String>(
-                                    value: 'comment',
-                                    child: Text('Comment'),
+                                  PopupMenuItem<String>(
+                                    value: 'delete',
+                                    child: Text('Delete', style: TextStyle(color: Colors.red)),
                                   ),
                                 ],
                               ),
@@ -9496,7 +9495,49 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
     final lockedEndLocation = resolvedEnd.trim().isNotEmpty
         ? resolvedEnd.trim()
         : initialReceiverDept;
-    // Debug logging removed
+
+    // Determine payroll locked next department
+    {
+      int idxFromHint(String hint, List<String> route) {
+        final up = hint.toUpperCase();
+        for (int i = 0; i < route.length; i++) {
+          if (up == route[i] || up.contains(route[i])) return i;
+        }
+        return -1;
+      }
+
+      final activeRoute = resolvedRoutingQueue.isNotEmpty
+          ? resolvedRoutingQueue
+          : payrollFixedRoute;
+
+      int idx = -1;
+      if (resolvedRouteStep != null && resolvedRouteStep! >= 0) {
+        idx = resolvedRouteStep!;
+      }
+      final holderIdx = resolvedCurrentHolder.isNotEmpty
+          ? idxFromHint(resolvedCurrentHolder, activeRoute)
+          : -1;
+      if (holderIdx >= 0 && idx >= 0 && holderIdx != idx) {
+        idx = holderIdx;
+      }
+      if (idx < 0) {
+        final holderSeed = resolvedCurrentHolder.isNotEmpty
+            ? resolvedCurrentHolder
+            : initialReceiverDept.trim().toUpperCase();
+        idx = idxFromHint(holderSeed, activeRoute);
+      }
+
+      final isPayrollType = resolvedType.toLowerCase().contains('payroll');
+      if (isPayrollType && idx >= 0) {
+        isPayrollLocked = true;
+        if (idx + 1 < activeRoute.length) {
+          payrollNextDept = activeRoute[idx + 1];
+        } else {
+          payrollNextDept = activeRoute.last;
+        }
+        deptCtrl.text = payrollNextDept!;
+      }
+    }
 
     await showModalBottomSheet<void>(
       context: context,
@@ -9808,6 +9849,95 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
           : (activity['title']?.toString() ?? 'Document'),
       recipientDepartment: recipientDepartment,
     );
+  }
+
+  Future<void> _archiveDocumentFromServer({
+    required String? trackingId,
+    required String? mobileTimestamp,
+    required String? docHash,
+    required String? filePath,
+    required String docTitle,
+    int? activityId,
+  }) async {
+    final confirm = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Archive Document'),
+            content: Text('Are you sure you want to archive "$docTitle"?'),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF6868AC)),
+                child:
+                    const Text('Archive', style: TextStyle(color: Colors.white)),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+
+    if (!confirm || !mounted) return;
+
+    setState(() => _isLoading = true);
+    try {
+      final root = await _getServerRoot();
+      if (root == null) return;
+
+      String resolvedTid = trackingId?.trim() ?? '';
+      if (resolvedTid.isEmpty) {
+        resolvedTid = (await _resolveTrackingIdForAction(
+              actionLabel: 'Archive',
+              trackingId: null,
+              mobileTimestamp: mobileTimestamp,
+              docHash: docHash,
+              filePath: filePath,
+            )) ??
+            '';
+      }
+
+      if (resolvedTid.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('Cannot archive: document ID not found')));
+        }
+        return;
+      }
+
+      final uri = Uri.parse('$root/lib/OCR(UPDATED)/api/archive_transfer.php');
+      final response = await http.post(uri, body: {
+        'action': 'transfer',
+        'tracking_id': resolvedTid,
+        'delete_from_tracking': 'true',
+      }).timeout(const Duration(seconds: 15));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['success'] == true) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Document archived successfully')),
+            );
+            // Refresh dashboard
+            _fetchRecentActivity();
+          }
+          return;
+        }
+      }
+      throw Exception(response.body);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Archive failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
   }
 
   // Show encrypted document warning dialog
