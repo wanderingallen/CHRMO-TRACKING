@@ -11,6 +11,7 @@ function firestore_upsert_document($collection, $documentId, array $fields)
     $candidates = [
         __DIR__ . '/../../secure/chrmo-dta-capstone-firebase-adminsdk-fbsvc-91f1559260.json',
         __DIR__ . '/../../secure/chrmo-21269-firebase-adminsdk-fbsvc-ed9528d76a.json',
+        __DIR__ . '/../../secure/chrmo-21269-firebase-adminsdk.json',
         __DIR__ . '/../../secure/firebase_service_account.json',
     ];
     $serviceAccountPath = null;
@@ -39,6 +40,7 @@ function firestore_upsert_document($collection, $documentId, array $fields)
                 return strcmp($a, $b);
             });
             $serviceAccountPath = $jsonFiles[0];
+            error_log('firestore_upsert_document: using glob fallback service account: ' . basename($serviceAccountPath));
         }
     }
     if (!$serviceAccountPath) {
@@ -135,6 +137,7 @@ function firestore_delete_document($collection, $documentId)
     $candidates = [
         __DIR__ . '/../../secure/chrmo-dta-capstone-firebase-adminsdk-fbsvc-91f1559260.json',
         __DIR__ . '/../../secure/chrmo-21269-firebase-adminsdk-fbsvc-ed9528d76a.json',
+        __DIR__ . '/../../secure/chrmo-21269-firebase-adminsdk.json',
         __DIR__ . '/../../secure/firebase_service_account.json',
     ];
     $serviceAccountPath = null;
@@ -162,6 +165,7 @@ function firestore_delete_document($collection, $documentId)
                 return strcmp($a, $b);
             });
             $serviceAccountPath = $jsonFiles[0];
+            error_log('firestore_delete_document: using glob fallback service account: ' . basename($serviceAccountPath));
         }
     }
     if (!$serviceAccountPath) {

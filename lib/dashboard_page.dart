@@ -2823,8 +2823,8 @@ class _DashboardPageState extends State<DashboardPage>
         ? (endLocation ?? '').trim()
         : initialReceiverDept;
     String resolvedType = docType.trim();
-    // Payroll fixed routing chain: HR → CBO → ACCOUNTING → CAO → CTO
-    const payrollFixedRoute = ['HR', 'CBO', 'ACCOUNTING', 'CAO', 'CTO'];
+    // Payroll fixed routing chain: HR → CBO → CACCO → CTO
+    const payrollFixedRoute = ['HR', 'CBO', 'CACCO', 'CTO'];
     bool isPayrollLocked = false;
     String? payrollNextDept;
     String resolvedCurrentHolder = (currentHolder ?? '').trim().toUpperCase();
@@ -2903,7 +2903,7 @@ class _DashboardPageState extends State<DashboardPage>
       int idxFromHint(String hint, List<String> route) {
         final up = hint.toUpperCase();
         for (int i = 0; i < route.length; i++) {
-          if (up == route[i] || up.contains(route[i])) return i;
+          if (up == route[i]) return i;
         }
         return -1;
       }
@@ -3276,7 +3276,7 @@ class _DashboardPageState extends State<DashboardPage>
       };
       // For payroll documents, pass the fixed routing queue
       if (effectiveType.toLowerCase().contains('payroll')) {
-        payload['routing_queue'] = 'HR,CBO,ACCOUNTING,CAO,CTO';
+        payload['routing_queue'] = 'HR,CBO,CACCO,CTO';
       }
       if (notifId > 0) {
         // Fallback: if the activity came from notifications and is missing tracking_id/mobile_timestamp,
@@ -9706,8 +9706,8 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
     final deptCtrl = TextEditingController();
     final typeCtrl = TextEditingController(text: docType);
 
-    // ── Fixed Payroll Routing: HR → CBO → ACCOUNTING → CAO → CTO ──
-    const payrollFixedRoute = ['HR', 'CBO', 'ACCOUNTING', 'CAO', 'CTO'];
+    // ── Fixed Payroll Routing: HR → CBO → CACCO → CTO ──
+    const payrollFixedRoute = ['HR', 'CBO', 'CACCO', 'CTO'];
     bool isPayrollLocked = false;
     String? payrollNextDept;
     String resolvedCurrentHolder = initialReceiverDept.trim().toUpperCase();
@@ -9758,7 +9758,7 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
       int idxFromHint(String hint, List<String> route) {
         final up = hint.toUpperCase();
         for (int i = 0; i < route.length; i++) {
-          if (up == route[i] || up.contains(route[i])) return i;
+          if (up == route[i]) return i;
         }
         return -1;
       }
@@ -9837,6 +9837,8 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
                     'CACCO',
                     'CADO',
                     'CMO',
+                    'HR',
+                    'IT',
                     for (final u in users)
                       (u['department'] ?? '').toString().trim().toUpperCase(),
                   }..removeWhere((e) => e.trim().isEmpty);
@@ -10028,7 +10030,7 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
       // For payroll documents, always pass the fixed routing queue so the
       // server enforces HR → CBO → ACCOUNTING → CAO → CTO.
       if (type.toLowerCase().contains('payroll')) {
-        payload['routing_queue'] = 'HR,CBO,ACCOUNTING,CAO,CTO';
+        payload['routing_queue'] = 'HR,CBO,CACCO,CTO';
       }
       if (docHash?.trim().isNotEmpty ?? false) {
         payload['doc_hash'] = docHash!.trim();

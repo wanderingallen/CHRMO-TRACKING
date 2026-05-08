@@ -19,7 +19,7 @@ class ServerService {
   static const String _envServerRoot =
       String.fromEnvironment('SERVER_ROOT', defaultValue: '');
   static const String _envApiHost =
-      String.fromEnvironment('API_HOST', defaultValue: '192.168.1.111');
+      String.fromEnvironment('API_HOST', defaultValue: '10.164.94.250');
   static const String _envApiScheme =
       String.fromEnvironment('API_SCHEME', defaultValue: 'http');
   static const String _envProjectPath = String.fromEnvironment(

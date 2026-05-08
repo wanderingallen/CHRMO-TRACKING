@@ -834,18 +834,7 @@ include 'header.php';
                 Sign In
             </button>
 
-            <div class="relative my-6">
-                <div class="absolute inset-0 flex items-center">
-                    <div class="w-full border-t border-gray-200"></div>
-                </div>
-                <div class="relative flex justify-center text-sm">
-                    <span class="px-4 bg-white text-gray-500">Don't have an account?</span>
-                </div>
-            </div>
 
-            <a href="register.php" class="block w-full text-center py-3 px-4 border border-primary-400 text-primary-500 rounded-xl font-medium hover:bg-primary-500 hover:text-white hover:border-primary-500 btn-press">
-                Register Now
-            </a>
         </form>
     </div>
 </div>

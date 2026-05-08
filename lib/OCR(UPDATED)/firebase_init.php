@@ -10,9 +10,32 @@ use Kreait\Firebase\ServiceAccount;
  * Returns FirestoreClient instance or null on failure.
  */
 function init_firebase() {
-    $serviceAccountPath = __DIR__ . '/../../secure/firebase_service_account.json';
-    if (!file_exists($serviceAccountPath)) {
-        error_log('Firebase service account file not found at: ' . $serviceAccountPath);
+    $candidates = [
+        __DIR__ . '/../../secure/chrmo-21269-firebase-adminsdk.json',
+        __DIR__ . '/../../secure/firebase_service_account.json',
+        __DIR__ . '/../../secure/chrmo-dta-capstone-firebase-adminsdk-fbsvc-91f1559260.json',
+        __DIR__ . '/../../secure/chrmo-21269-firebase-adminsdk-fbsvc-ed9528d76a.json',
+    ];
+    $serviceAccountPath = null;
+    foreach ($candidates as $p) {
+        if (file_exists($p)) {
+            $serviceAccountPath = $p;
+            break;
+        }
+    }
+    // Glob fallback: find any JSON with firebase-adminsdk in the name
+    if (!$serviceAccountPath) {
+        $secureDir = __DIR__ . '/../../secure';
+        if (is_dir($secureDir)) {
+            $globbed = glob($secureDir . '/*firebase*adminsdk*.json');
+            if (!empty($globbed)) {
+                $serviceAccountPath = $globbed[0];
+                error_log('init_firebase: using glob fallback: ' . basename($serviceAccountPath));
+            }
+        }
+    }
+    if (!$serviceAccountPath) {
+        error_log('Firebase service account file not found in secure/ directory');
         return null;
     }
 
@@ -33,9 +56,30 @@ function init_firebase() {
  * Optional: Initialize full Firebase app (if you need Auth, Storage, etc.)
  */
 function init_firebase_app() {
-    $serviceAccountPath = __DIR__ . '/../../secure/firebase_service_account.json';
-    if (!file_exists($serviceAccountPath)) {
-        error_log('Firebase service account file not found at: ' . $serviceAccountPath);
+    $candidates = [
+        __DIR__ . '/../../secure/chrmo-21269-firebase-adminsdk.json',
+        __DIR__ . '/../../secure/firebase_service_account.json',
+        __DIR__ . '/../../secure/chrmo-dta-capstone-firebase-adminsdk-fbsvc-91f1559260.json',
+        __DIR__ . '/../../secure/chrmo-21269-firebase-adminsdk-fbsvc-ed9528d76a.json',
+    ];
+    $serviceAccountPath = null;
+    foreach ($candidates as $p) {
+        if (file_exists($p)) {
+            $serviceAccountPath = $p;
+            break;
+        }
+    }
+    if (!$serviceAccountPath) {
+        $secureDir = __DIR__ . '/../../secure';
+        if (is_dir($secureDir)) {
+            $globbed = glob($secureDir . '/*firebase*adminsdk*.json');
+            if (!empty($globbed)) {
+                $serviceAccountPath = $globbed[0];
+            }
+        }
+    }
+    if (!$serviceAccountPath) {
+        error_log('Firebase service account file not found in secure/ directory');
         return null;
     }
 

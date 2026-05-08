@@ -262,6 +262,8 @@ try {
 if (isset($_GET['action']) && $_GET['action'] === 'stream') {
   // Use a simple change-detection strategy: return latest N rows and send only when changed.
   if (session_status() === PHP_SESSION_NONE) session_start();
+  // Release session lock immediately so other requests from same user aren't blocked.
+  session_write_close();
   // Best-effort: disable buffering/compression so events flush immediately (common XAMPP issue).
   @ini_set('output_buffering', 'off');
   @ini_set('zlib.output_compression', '0');
@@ -283,15 +285,30 @@ if (isset($_GET['action']) && $_GET['action'] === 'stream') {
   $lastHash = isset($_GET['hash']) ? (string)$_GET['hash'] : '';
   $pollInterval = 2; // seconds
   $rowLimit = 50; // how many recent rows to include
+  $maxLifetime = 300; // 5 minutes max connection lifetime to prevent zombie connections
+  $startTime = time();
 
   // Pre-warm by sending a comment to establish the stream
   echo ":connected\n\n";
   @ob_flush(); @flush();
 
-  while (!connection_aborted()) {
+  while (true) {
+    // Check if client disconnected
+    if (connection_aborted()) {
+      break;
+    }
+
+    // Enforce maximum connection lifetime to prevent resource exhaustion
+    if ((time() - $startTime) >= $maxLifetime) {
+      echo "event: reconnect\n";
+      echo "data: {\"reason\":\"max_lifetime\"}\n\n";
+      @ob_flush(); @flush();
+      break;
+    }
+
     $rows = [];
     $sql = "SELECT id,type,employee_name,department,current_holder,end_location,status,date_submitted,created_at,file_type_icon,overdue_state,overdue_label,overdue_full_label,routing_queue,route_step FROM tracking ORDER BY id DESC LIMIT " . (int)$rowLimit;
-    if ($res = $connection->query($sql)) {
+    if ($res = @$connection->query($sql)) {
       while ($r = $res->fetch_assoc()) { $rows[] = $r; }
       $res->free();
     }
@@ -318,11 +335,19 @@ if (isset($_GET['action']) && $_GET['action'] === 'stream') {
       @ob_flush(); @flush();
     }
 
+    // Check again after output
+    if (connection_aborted()) {
+      break;
+    }
+
     // Sleep then loop
     sleep((int)$pollInterval);
   }
 
   // Close connection gracefully
+  if ($connection && !$connection->connect_error) {
+    @$connection->close();
+  }
   exit;
 }
 
@@ -4699,6 +4724,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'archive_group') {
   $ocr_text = (string)($seed['ocr_content'] ?? '');
 
   if (!$archiveRowId) {
+    // Get next available ID for archive table (id column is not AUTO_INCREMENT)
     $nextIdResult = $connection->query("SELECT MAX(id) as max_id FROM archive");
     $nextId = 1;
     if ($nextIdResult && ($row = $nextIdResult->fetch_assoc())) {
@@ -4715,9 +4741,9 @@ if (isset($_GET['action']) && $_GET['action'] === 'archive_group') {
     }
     $seedIdInt = (int)$seed_id;
     if ($hasSourceTrackingId) {
-      $ins->bind_param('issssssssi', $nextId, $doc_name, $dept, $dtype, $date_archived, $fsize, $ftype, $fpath, $ocr_text, $seedIdInt);
+      $ins->bind_param('isssssssssi', $nextId, $doc_name, $dept, $dtype, $date_archived, $fsize, $ftype, $fpath, $ocr_text, $seedIdInt);
     } else {
-      $ins->bind_param('issssssss', $nextId, $doc_name, $dept, $dtype, $date_archived, $fsize, $ftype, $fpath, $ocr_text);
+      $ins->bind_param('isssssssss', $nextId, $doc_name, $dept, $dtype, $date_archived, $fsize, $ftype, $fpath, $ocr_text);
     }
     if (!$ins->execute()) {
       error_log('Group archive insert failed: ' . $ins->error);
@@ -4729,13 +4755,24 @@ if (isset($_GET['action']) && $_GET['action'] === 'archive_group') {
 
     // Store which department performed the archive action
     if (__tracking_archive_has_archived_by_dept($connection)) {
-        $archiverDept = $_SESSION['user_department'] ?? $_SESSION['department'] ?? '';
-        if ($archiverDept !== '') {
+        $archiverDept = $__isAdmin ? 'ADMIN' : ($_SESSION['user_department'] ?? $_SESSION['department'] ?? '');
+        if (trim((string)$archiverDept) !== '') {
             $upAbd = $connection->prepare("UPDATE archive SET archived_by_department = ? WHERE id = ?");
             if ($upAbd) {
                 $upAbd->bind_param('si', $archiverDept, $archiveRowId);
                 $upAbd->execute();
                 $upAbd->close();
+            }
+        } else {
+            // Fallback: use the document's own department so the row is visible in archive.php
+            $docDept = trim((string)($seed['department'] ?? $dept));
+            if ($docDept !== '') {
+                $upAbd = $connection->prepare("UPDATE archive SET archived_by_department = ? WHERE id = ?");
+                if ($upAbd) {
+                    $upAbd->bind_param('si', $docDept, $archiveRowId);
+                    $upAbd->execute();
+                    $upAbd->close();
+                }
             }
         }
     }
@@ -4747,13 +4784,23 @@ if (isset($_GET['action']) && $_GET['action'] === 'archive_group') {
     }
     // Also update archived_by_department on existing archive row
     if (__tracking_archive_has_archived_by_dept($connection)) {
-        $archiverDept = $_SESSION['user_department'] ?? $_SESSION['department'] ?? '';
-        if ($archiverDept !== '') {
+        $archiverDept = $__isAdmin ? 'ADMIN' : ($_SESSION['user_department'] ?? $_SESSION['department'] ?? '');
+        if (trim((string)$archiverDept) !== '') {
             $upAbd = $connection->prepare("UPDATE archive SET archived_by_department = ? WHERE id = ?");
             if ($upAbd) {
                 $upAbd->bind_param('si', $archiverDept, $archiveRowId);
                 $upAbd->execute();
                 $upAbd->close();
+            }
+        } else {
+            $docDept = trim((string)($seed['department'] ?? $dept));
+            if ($docDept !== '') {
+                $upAbd = $connection->prepare("UPDATE archive SET archived_by_department = ? WHERE id = ?");
+                if ($upAbd) {
+                    $upAbd->bind_param('si', $docDept, $archiveRowId);
+                    $upAbd->execute();
+                    $upAbd->close();
+                }
             }
         }
     }
@@ -4775,8 +4822,8 @@ if (isset($_GET['action']) && $_GET['action'] === 'archive_group') {
   $actor_id = $_SESSION['user_id'] ?? null;
   $archivingDeptRaw = $__isAdmin ? 'ADMIN' : ($_SESSION['user_department'] ?? $_SESSION['department'] ?? '');
   if (trim((string)$archivingDeptRaw) === '') {
-    // Fallback for sessions missing department: use current holder/department from the row.
-    $archivingDeptRaw = ($r['current_holder'] ?? $r['department'] ?? '');
+    // Fallback for sessions missing department: use department from the seed/group rows.
+    $archivingDeptRaw = ($seed['department'] ?? ($groupRows[0]['department'] ?? ''));
   }
   $archivingDept = strtoupper(trim((string)$archivingDeptRaw));
   $archUserId = (int)($_SESSION['user_id'] ?? 0);
@@ -4882,33 +4929,54 @@ if (isset($_GET['archive_id'])) {
     }
     
     // Try to avoid inserting obvious duplicates into archive using only existing columns.
-    // We check for an existing row with the same document_name, department, type and status.
+    // We check for an existing row with the same document_name, department, type, file_path and status.
+    // Also check by source_tracking_id if the column exists (most reliable dedup).
     $existingArchiveId = null;
-    if ($chk = $connection->prepare("SELECT id FROM archive WHERE document_name = ? AND department = ? AND type = ? AND status = 'Archived' LIMIT 1")) {
+    $hasSourceTrackingId = __tracking_archive_has_source_tracking_id($connection);
+    if ($hasSourceTrackingId) {
+        // Best dedup: match by source_tracking_id (unique per tracking row)
+        $srcTrackIdInt = (int)$archive_id;
+        if ($chk = $connection->prepare("SELECT id FROM archive WHERE source_tracking_id = ? LIMIT 1")) {
+            $chk->bind_param('i', $srcTrackIdInt);
+            if ($chk->execute()) {
+                $cres = $chk->get_result();
+                if ($cres && ($crow = $cres->fetch_assoc())) {
+                    $existingArchiveId = $crow['id'];
+                }
+            }
+            $chk->close();
+        }
+    }
+    if ($existingArchiveId === null) {
+        // Fallback dedup: match by name+dept+type+file_path (tighter than name+dept+type alone)
         $doc_name = $doc['employee_name'];
         $dept = $doc['department'];
         $dtype = $doc['type'];
-        $chk->bind_param('sss', $doc_name, $dept, $dtype);
-        if ($chk->execute()) {
-            $cres = $chk->get_result();
-            if ($cres && ($crow = $cres->fetch_assoc())) {
-                $existingArchiveId = $crow['id'];
+        $fpath_chk = (string)($doc['file_path'] ?? '');
+        if ($fpath_chk !== '') {
+            if ($chk = $connection->prepare("SELECT id FROM archive WHERE document_name = ? AND department = ? AND type = ? AND file_path = ? AND status = 'Archived' LIMIT 1")) {
+                $chk->bind_param('ssss', $doc_name, $dept, $dtype, $fpath_chk);
+                if ($chk->execute()) {
+                    $cres = $chk->get_result();
+                    if ($cres && ($crow = $cres->fetch_assoc())) {
+                        $existingArchiveId = $crow['id'];
+                    }
+                }
+                $chk->close();
             }
         }
-        $chk->close();
     }
 
     $archiveRowId = $existingArchiveId;
     if ($existingArchiveId === null) {
-        // Get next available ID for archive table
+        // Get next available ID for archive table (id column is not AUTO_INCREMENT)
         $nextIdResult = $connection->query("SELECT MAX(id) as max_id FROM archive");
         $nextId = 1;
         if ($nextIdResult && ($row = $nextIdResult->fetch_assoc())) {
-            $nextId = ($row['max_id'] ?? 0) + 1;
+            $nextId = ((int)($row['max_id'] ?? 0)) + 1;
         }
-        
+
         // Insert archive row including file_path, ocr_content (and source_tracking_id when available) so preview, search, and history work
-        $hasSourceTrackingId = __tracking_archive_has_source_tracking_id($connection);
         $sqlIns = $hasSourceTrackingId
             ? "INSERT INTO archive (id, document_name, department, type, status, date_archived, size, file_type_icon, file_path, ocr_content, source_tracking_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             : "INSERT INTO archive (id, document_name, department, type, status, date_archived, size, file_type_icon, file_path, ocr_content) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
@@ -4938,13 +5006,24 @@ if (isset($_GET['archive_id'])) {
 
             // Store which department performed the archive action
             if (__tracking_archive_has_archived_by_dept($connection)) {
-                $archiverDept = $_SESSION['user_department'] ?? $_SESSION['department'] ?? '';
-                if ($archiverDept !== '') {
+                $archiverDept = $__isAdmin ? 'ADMIN' : ($_SESSION['user_department'] ?? $_SESSION['department'] ?? '');
+                if (trim((string)$archiverDept) !== '') {
                     $upAbd = $connection->prepare("UPDATE archive SET archived_by_department = ? WHERE id = ?");
                     if ($upAbd) {
                         $upAbd->bind_param('si', $archiverDept, $archiveRowId);
                         $upAbd->execute();
                         $upAbd->close();
+                    }
+                } else {
+                    // Fallback: use the document's own department so the row is visible in archive.php
+                    $docDept = trim((string)($doc['department'] ?? ''));
+                    if ($docDept !== '') {
+                        $upAbd = $connection->prepare("UPDATE archive SET archived_by_department = ? WHERE id = ?");
+                        if ($upAbd) {
+                            $upAbd->bind_param('si', $docDept, $archiveRowId);
+                            $upAbd->execute();
+                            $upAbd->close();
+                        }
                     }
                 }
             }
@@ -4967,13 +5046,24 @@ if (isset($_GET['archive_id'])) {
         }
         // Also update archived_by_department on existing archive row
         if (__tracking_archive_has_archived_by_dept($connection)) {
-            $archiverDept = $_SESSION['user_department'] ?? $_SESSION['department'] ?? '';
-            if ($archiverDept !== '') {
+            $archiverDept = $__isAdmin ? 'ADMIN' : ($_SESSION['user_department'] ?? $_SESSION['department'] ?? '');
+            if (trim((string)$archiverDept) !== '') {
                 $upAbd = $connection->prepare("UPDATE archive SET archived_by_department = ? WHERE id = ?");
                 if ($upAbd) {
                     $upAbd->bind_param('si', $archiverDept, $existingArchiveId);
                     $upAbd->execute();
                     $upAbd->close();
+                }
+            } else {
+                // Fallback: use the document's own department so the row is visible in archive.php
+                $docDept = trim((string)($doc['department'] ?? ''));
+                if ($docDept !== '') {
+                    $upAbd = $connection->prepare("UPDATE archive SET archived_by_department = ? WHERE id = ?");
+                    if ($upAbd) {
+                        $upAbd->bind_param('si', $docDept, $existingArchiveId);
+                        $upAbd->execute();
+                        $upAbd->close();
+                    }
                 }
             }
         }
@@ -4996,8 +5086,8 @@ if (isset($_GET['archive_id'])) {
     // still see it in tracking.php until they independently archive it.
     $archivingDeptRaw = $__isAdmin ? 'ADMIN' : ($_SESSION['user_department'] ?? $_SESSION['department'] ?? '');
     if (trim((string)$archivingDeptRaw) === '') {
-      // Fallback for sessions missing department: use current holder/department from the doc.
-      $archivingDeptRaw = ($doc['current_holder'] ?? $doc['department'] ?? '');
+      // Fallback for sessions missing department: use the document's department (not current_holder which is a person name).
+      $archivingDeptRaw = ($doc['department'] ?? '');
     }
     $archivingDept = strtoupper(trim((string)$archivingDeptRaw));
     if ($__hasDeptArchives && $archivingDept !== '') {
@@ -5043,7 +5133,7 @@ if (isset($_GET['archive_id'])) {
         $ah = @$connection->prepare("INSERT INTO archive_history (archive_id, action, actor_user_id, to_status, to_holder, notes, created_at) VALUES (?, 'archive', ?, 'Archived', 'Digital Archive', 'Document Archived', NOW())");
         if ($ah) { $actorInt = (int)($actor_id ?? 0); $ah->bind_param('ii', $archiveRowId, $actorInt); @$ah->execute(); $ah->close(); }
     }
-    header("Location: tracking.php");
+    header("Location: archive.php?status=archived");
     exit();
 }
 
@@ -9116,18 +9206,15 @@ $connection->close();
 
     function normalizeDepartmentName(value) {
   const v = (value || '').toString().trim().toUpperCase();
-  if (v.isEmpty) return '';
-  if (v.includes('ACCOUNTING')) return 'ACCOUNTING';
+  if (!v) return '';
+  if (v.includes('ACCOUNTING') || v.includes('CACCO')) return 'ACCOUNTING';
   if (v === 'HR' || v.includes('HUMAN RESOURCE')) return 'HR';
-  if (v.includes('CBO')) return 'CBO';
-  if (v.includes('CAO')) return 'CAO';
-  if (v.includes('CTO')) return 'CTO';
+  if (v.includes('CBO') || v.includes('BUDGET')) return 'CBO';
+  if (v.includes('CAO') || v.includes('CADO') || v.includes('ADMINISTRATOR')) return 'CAO';
+  if (v.includes('CTO') || v.includes('TREASURER')) return 'CTO';
   if (v.includes('CPDO')) return 'CPDO';
   if (v.includes('GSO')) return 'GSO';
-  if (v.includes('CACCO')) return 'CACCO';
-  if (v.includes('CADO')) return 'CADO';
   if (v.includes('CMO')) return 'CMO';
-  // Handle legacy 'ACCOUNT' → 'ACCOUNTING' conversion
   if (v === 'ACCOUNT') return 'ACCOUNTING';
   return v;
 }
@@ -9334,21 +9421,19 @@ $connection->close();
             const mobileIndicator = isMobileDocument ? '<span class="mobile-badge" title="Uploaded from Mobile App"><i class="fas fa-mobile-alt"></i></span>' : '';
             const displayType = group.type || normalizeDocType(first.type);
             const normalizedType = normalizeDocType(displayType).toLowerCase();
-            const isAnnouncement = normalizedType === 'announcement';
+            const isGroupArchiveDoc = normalizedType === 'announcement' || normalizedType === 'memo';
             const allCompleted = items.length > 0 && items.every(d => ((d?.status || '').toString().trim().toLowerCase() === 'completed'));
-            const archiveDisabled = (status === 'Archived' || status === 'Rejected') || (isAnnouncement && !allCompleted);
-            const archiveTitle = (isAnnouncement && !allCompleted)
+            const archiveDisabled = (status === 'Archived' || status === 'Rejected') || (isGroupArchiveDoc && !allCompleted);
+            const archiveTitle = (isGroupArchiveDoc && !allCompleted)
               ? 'Archive is available once all departments are Completed'
               : 'Archive';
             const archiveDocId = first.id || group.id;
             const safeDisplayType = String(displayType).replace(/'/g, "\\'");
-            // For Memos with multiple departments: each dept archives their own sub-row.
-            // We disable the group-header Archive button and show a hint instead.
-            // Announcements retain group-archive (all-at-once) semantics.
-            const isMemoGroup = !isAnnouncement && items.length > 1;
-            const archiveOnClick = (isAnnouncement && items.length > 1)
+            
+            const archiveOnClick = (isGroupArchiveDoc && items.length > 1)
               ? `archiveAnnouncementGroupConfirm('${archiveDocId}', '${safeDisplayType}')`
               : `archiveDocumentConfirm('${archiveDocId}', '${safeDisplayType}')`;
+            
             const groupRow = document.createElement('tr');
             groupRow.setAttribute('data-id', String(group.id ?? first.id ?? ''));
             groupRow.setAttribute('data-type', displayType);
@@ -9388,14 +9473,9 @@ $connection->close();
                   <button class="action-button timeline" onclick="viewDocumentTimeline('${first.id || group.id}')">
                     <i class="fas fa-history"></i> Timeline
                   </button>
-                  ${isMemoGroup
-                    ? `<span class="action-button" style="background:rgba(99,102,241,0.1);color:#6366f1;cursor:default;font-size:0.78rem;padding:5px 8px;" title="Expand Departments to archive your copy">
-                         <i class="fas fa-info-circle"></i> Archive via Departments ↑
-                       </span>`
-                    : `<button class="action-button archive" title="${archiveTitle}" onclick="${archiveOnClick}" ${archiveDisabled ? 'disabled' : ''}>
-                         <i class="fas fa-archive"></i> Archive
-                       </button>`
-                  }
+                  <button class="action-button archive" title="${archiveTitle}" onclick="${archiveOnClick}" ${archiveDisabled ? 'disabled' : ''}>
+                    <i class="fas fa-archive"></i> Archive
+                  </button>
                 </div>
               </td>
             `;

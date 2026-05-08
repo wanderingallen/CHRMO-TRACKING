@@ -1098,6 +1098,8 @@ if ($action === 'add_attachment') {
                     $retryValues = $values;
                     $retryTypes = $types;
 
+                    error_log('[add_attachment] retry_attempt tracking_id=' . $trackingId . ' dept=' . $department . ' file=' . $fileName . ' reason=UNIQUE_VIOLATION');
+
                     // Overwrite the tracking_id value with 0 to bypass UNIQUE(tracking_id),
                     // while still linking via parent_tracking_id = $trackingId.
                     $trackingColName = $map['tracking'];
@@ -1105,6 +1107,23 @@ if ($action === 'add_attachment') {
                         if ($retryCols[$i] === $trackingColName) {
                             $retryValues[$i] = 0;
                         }
+                    }
+
+                    // Ensure parent_tracking_id is ALWAYS set to original trackingId so
+                    // get_attachments (which queries OR parent_tracking_id=?) can find it.
+                    $parentColName = $map['parent_tracking_id'];
+                    $parentFound = false;
+                    for ($i = 0; $i < count($retryCols); $i++) {
+                        if ($retryCols[$i] === $parentColName) {
+                            $retryValues[$i] = $trackingId;
+                            $parentFound = true;
+                        }
+                    }
+                    if (!$parentFound) {
+                        // parent_tracking_id wasn't in original insert columns; add it
+                        $retryCols[] = $parentColName;
+                        $retryValues[] = $trackingId;
+                        $retryTypes .= 'i';
                     }
 
                     // Also ensure child_tracking_id is unique on retry (for UNIQUE(parent_tracking_id, child_tracking_id)).

@@ -3242,7 +3242,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     if (supportsMultiSend &&
         isMultiSendMode &&
         selectedDepartments.isNotEmpty) {
-      if (documentType == 'Announcement') {
+      if (documentType == 'Announcement' || documentType == 'Memo') {
         int successCount = 0;
         int failCount = 0;
         for (final dept in selectedDepartments) {
@@ -3268,7 +3268,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content:
-                  Text('✅ Announcement sent to $successCount department(s)!'),
+                  Text('✅ $documentType sent to $successCount department(s)!'),
               backgroundColor: Colors.green,
             ),
           );
@@ -3277,40 +3277,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             SnackBar(
               content: Text('⚠️ Sent to $successCount, failed: $failCount'),
               backgroundColor: Colors.orange,
-            ),
-          );
-        }
-      } else {
-        // Memo: sequential routing
-        final firstDept = selectedDepartments.first;
-        final lastDept = selectedDepartments.last;
-        final routingQueue = selectedDepartments.join(',');
-        final ok = await _uploadToTrackingPhp(
-          timestamp: timestamp,
-          documentName: documentName,
-          documentType: documentType,
-          uploadFilePath: uploadFilePath,
-          textPath: textPath,
-          nextDepartment: firstDept,
-          endLocation: lastDept,
-          trackingId: _routingTrackingId,
-          isBroadcast: false,
-          routingQueue: routingQueue,
-        );
-        if (!mounted) return;
-        if (ok) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                  '✅ Memo routed to ${selectedDepartments.length} department(s)! Starting with $firstDept'),
-              backgroundColor: Colors.green,
-            ),
-          );
-        } else {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('❌ Failed to send memo'),
-              backgroundColor: Colors.red,
             ),
           );
         }
@@ -4727,6 +4693,29 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       return;
     }
 
+    // For large batches (>5 docs), delegate to chunked upload to prevent
+    // single-request timeouts and excessive memory usage on mobile.
+    if (_capturedDocuments.length > 5) {
+      debugPrint('[batch] ${_capturedDocuments.length} docs exceeds threshold, using chunked upload');
+      final prefs = await SharedPreferences.getInstance();
+      final userDepartment = prefs.getString('user_department') ?? 'General';
+      await _uploadBatchChunked(
+        documents: List<DocumentData>.from(_capturedDocuments),
+        receiverDepartment: userDepartment,
+        endLocation: 'Mobile App Archive',
+        chunkSize: 3,
+        onProgress: (current, total, message) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).hideCurrentSnackBar();
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text(message)),
+            );
+          }
+        },
+      );
+      return;
+    }
+
     // Get user data from SharedPreferences
     final prefs = await SharedPreferences.getInstance();
     final userName = prefs.getString('user_name') ?? 'Unknown User';
@@ -5201,7 +5190,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
     // Payroll uses a fixed route: HR → CBO → ACCOUNTING → CAO → CTO
     final bool isPayrollFixedRoute = documentType.toLowerCase() == 'payroll';
-    final List<String> payrollRoute = ['HR', 'CBO', 'ACCOUNTING', 'CAO', 'CTO'];
+    final List<String> payrollRoute = ['HR', 'CBO', 'CACCO', 'CTO'];
     final int payrollUploaderIndex =
         payrollRoute.indexWhere((d) => d.toUpperCase() == userDepartment);
     final String payrollFixedNextDepartment = payrollUploaderIndex >= 0
