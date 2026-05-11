@@ -77,8 +77,8 @@ if (!$__isAdmin) {
     $__hasRouteStep = ($rsCol->num_rows > 0);
     $rsCol->free();
   }
-  if ($__deptUpper === 'ACCOUNT') {
-    $__deptUpper = 'ACCOUNTING';
+  if ($__deptUpper === 'ACCOUNT' || $__deptUpper === 'ACCOUNTING') {
+    $__deptUpper = 'CACCO';
   }
   if ($__deptUpper !== '') {
     $__queueFilter = '';

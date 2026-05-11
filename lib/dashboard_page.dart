@@ -2979,7 +2979,6 @@ class _DashboardPageState extends State<DashboardPage>
                     'CACCO',
                     'CADO',
                     'CMO',
-                    'ACCOUNTING',
                     'HR',
                     'IT',
                     for (final u in users)
@@ -5056,7 +5055,7 @@ class _DashboardPageState extends State<DashboardPage>
       String normalizeDepartment(String raw) {
         final up = raw.trim().toUpperCase();
         if (up.isEmpty) return '';
-        if (up.contains('ACCOUNTING')) return 'ACCOUNTING';
+        if (up.contains('ACCOUNTING') || up.contains('CACCO')) return 'CACCO';
         if (up == 'HR' || up.contains('HUMAN RESOURCE')) return 'HR';
         if (up.contains('CBO')) return 'CBO';
         if (up.contains('CAO')) return 'CAO';
@@ -7174,8 +7173,6 @@ class _DashboardPageState extends State<DashboardPage>
       'CADO',
       'CMO',
       'HR',
-      'ACCOUNTING',
-      'CAO',
     ];
     String? selectedDept = senderDepartment;
 
@@ -10027,7 +10024,7 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
         'end_location': endLocation,
       };
       // For payroll documents, always pass the fixed routing queue so the
-      // server enforces HR → CBO → ACCOUNTING → CAO → CTO.
+      // server enforces HR → CBO → CACCO → CTO.
       if (type.toLowerCase().contains('payroll')) {
         payload['routing_queue'] = 'HR,CBO,CACCO,CTO';
       }

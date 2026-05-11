@@ -19,8 +19,8 @@ if (isset($_SESSION['user_role']) && in_array(strtolower(trim($_SESSION['user_ro
 }
 if (!$__ssIsAdmin) {
     $__ssDept = strtoupper(trim((string)($_SESSION['user_department'] ?? $_SESSION['department'] ?? '')));
-    if ($__ssDept === 'ACCOUNT') {
-        $__ssDept = 'ACCOUNTING';
+    if ($__ssDept === 'ACCOUNT' || $__ssDept === 'ACCOUNTING') {
+        $__ssDept = 'CACCO';
     }
 }
 

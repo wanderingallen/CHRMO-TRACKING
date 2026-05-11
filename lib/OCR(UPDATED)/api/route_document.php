@@ -168,10 +168,10 @@ try {
     json_error('Announcements cannot be routed. Use Received/Acknowledge instead.', 400);
   }
 
-  // ── Fixed Payroll Routing: HR → CBO → ACCOUNTING → CAO → CTO ──
+  // ── Fixed Payroll Routing: HR → CBO → CACCO → CTO ──
   // If this is a Payroll document and no routing_queue was explicitly provided,
   // auto-assign the fixed chain so sequential routing kicks in.
-  $payrollFixedRoute = ['HR', 'CBO', 'ACCOUNTING', 'CAO', 'CTO'];
+  $payrollFixedRoute = ['HR', 'CBO', 'CACCO', 'CTO'];
   $isPayrollType = (stripos($type, 'payroll') !== false);
 
   // Optional
@@ -192,7 +192,7 @@ try {
   // Optional explicit tracking id from client (dashboard/mobile recent activity)
   $tracking_id = isset($_POST['tracking_id']) ? trim($_POST['tracking_id']) : '';
 
-  // -- Always enforce fixed payroll route: HR -> CBO -> ACCOUNTING -> CAO -> CTO --
+  // -- Always enforce fixed payroll route: HR -> CBO -> CACCO -> CTO --
   // Regardless of whether the client provided routing_queue, always validate
   // the receiver is the correct next step in the fixed chain.
   if ($isPayrollType) {
@@ -540,7 +540,7 @@ try {
 
     // Enforce payroll routing based on the authoritative current holder in DB.
     // This prevents cases where the client sends a wrong sender_department,
-    // which can cause jumps like CBO -> CAO (skipping ACCOUNTING).
+    // which can cause jumps like CBO -> CTO (skipping CACCO).
     if ($isPayrollType) {
       $prevUpper = strtoupper(trim((string)$previous_holder));
       $fallbackSenderUpper = strtoupper(trim((string)$sender_department));
@@ -1141,7 +1141,7 @@ try {
                 // Statuses like 'pending', 'in review', 'received' mean the dept is
                 // still working on it. Without this guard, receiving a document
                 // (which sets status='In Review' via a non-routing call) would
-                // immediately push it to the next department — e.g. ACCOUNTING→CAO.
+                // immediately push it to the next department — e.g. CACCO→CTO.
                 $completedStatuses = ['completed', 'forwarded', 'approved', 'done'];
                 $isFinished = in_array($curStatus, $completedStatuses);
                 $canAutoAdvance = ($holderMatchesExpected && !$is_routing && $isFinished);

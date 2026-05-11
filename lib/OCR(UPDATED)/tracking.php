@@ -4375,8 +4375,8 @@ if (isset($_GET['route_id']) && isset($_GET['new_holder']) && isset($_GET['new_s
     } else {
         // Regular route update
 
-        // ── Payroll Fixed Routing: HR → CBO → ACCOUNTING ──
-        $payrollFixedRoute = ['HR', 'CBO', 'ACCOUNTING', 'CAO', 'CTO'];
+        // ── Payroll Fixed Routing: HR → CBO → CACCO → CTO ──
+        $payrollFixedRoute = ['HR', 'CBO', 'CACCO', 'CTO'];
         if (stripos($route_doc_type, 'payroll') !== false && $prev_holder) {
           $prevIdx = array_search(strtoupper($prev_holder), $payrollFixedRoute);
           if ($prevIdx !== false && ($prevIdx + 1) < count($payrollFixedRoute)) {
@@ -5279,8 +5279,8 @@ if ($dept !== '' && $dept !== 'All Departments') {
 //      on every routing action, so once a dept routes a doc it stays visible.
 if (!$__isAdmin && !empty($_SESSION['user_department'])) {
   $ud = strtoupper(trim($_SESSION['user_department']));
-  if ($ud === 'ACCOUNT') {
-    $ud = 'ACCOUNTING';
+  if ($ud === 'ACCOUNT' || $ud === 'ACCOUNTING') {
+    $ud = 'CACCO';
   }
   $clauses[] = '(UPPER(TRIM(tracking.department)) = ? OR UPPER(TRIM(tracking.current_holder)) = ? OR UPPER(TRIM(tracking.end_location)) = ? OR (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(tracking.routing_queue, \' \', \'\'))) > 0 AND CAST(COALESCE(tracking.route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(tracking.routing_queue, \' \', \'\'))) - 1)))';
   $bindTypes .= 'sssss';
@@ -5298,8 +5298,8 @@ if (!$__isAdmin && !empty($_SESSION['user_department'])) {
   $archDept = $__isAdmin
       ? 'ADMIN'
       : strtoupper(trim($_SESSION['user_department'] ?? $_SESSION['department'] ?? ''));
-  if ($archDept === 'ACCOUNT') {
-    $archDept = 'ACCOUNTING';
+  if ($archDept === 'ACCOUNT' || $archDept === 'ACCOUNTING') {
+    $archDept = 'CACCO';
   }
   if ($__hasDeptArchives && $archDept !== '') {
     $clauses[] = 'NOT EXISTS (SELECT 1 FROM department_archives da WHERE da.tracking_id = tracking.id AND UPPER(TRIM(da.department)) = ?)';
@@ -8631,8 +8631,10 @@ $connection->close();
 
               console.log('[Firestore]', change.type.toUpperCase(), 'id =', id);
 
-            // Ignore test / placeholder documents that don't look like real tracking rows
-            if (!data.type && !data.employee_name && !data.department) {
+            // Ignore test / placeholder documents that don't look like real tracking rows.
+            // Allow docs that have id, mobile_timestamp, or status (written by upload/route APIs).
+            if (!data.type && !data.employee_name && !data.department
+                && !data.id && !data.mobile_timestamp && !data.status) {
               console.log('[Firestore] skipping non-tracking doc id =', id);
               return;
             }
@@ -9207,15 +9209,14 @@ $connection->close();
     function normalizeDepartmentName(value) {
   const v = (value || '').toString().trim().toUpperCase();
   if (!v) return '';
-  if (v.includes('ACCOUNTING') || v.includes('CACCO')) return 'ACCOUNTING';
+  if (v.includes('CACCO') || v.includes('ACCOUNTING') || v === 'ACCOUNT') return 'CACCO';
   if (v === 'HR' || v.includes('HUMAN RESOURCE')) return 'HR';
   if (v.includes('CBO') || v.includes('BUDGET')) return 'CBO';
-  if (v.includes('CAO') || v.includes('CADO') || v.includes('ADMINISTRATOR')) return 'CAO';
+  if (v.includes('CADO')) return 'CADO';
   if (v.includes('CTO') || v.includes('TREASURER')) return 'CTO';
   if (v.includes('CPDO')) return 'CPDO';
   if (v.includes('GSO')) return 'GSO';
   if (v.includes('CMO')) return 'CMO';
-  if (v === 'ACCOUNT') return 'ACCOUNTING';
   return v;
 }
 
@@ -12734,8 +12735,8 @@ $connection->close();
         }
         if ($dRes) $dRes->free();
       } catch (Throwable $t) {}
-      if (empty($deptList)) $deptList = ['CPDO','GSO','CBO','CTO','CACCO','CADO','CMO','HR','ACCOUNTING','CAO'];
-      // Deduplicate after UPPER normalization (e.g. ACCOUNT -> ACCOUNTING already mapped server-side)
+      if (empty($deptList)) $deptList = ['CPDO','GSO','CBO','CTO','CACCO','CADO','CMO','HR'];
+      // Deduplicate after UPPER normalization (e.g. ACCOUNT -> CACCO already mapped server-side)
       $deptList = array_values(array_unique($deptList));
       echo json_encode($deptList);
     ?>;

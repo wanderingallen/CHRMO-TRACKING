@@ -2248,8 +2248,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       final List<String> payrollRoute = [
         'HR',
         'CBO',
-        'ACCOUNTING',
-        'CAO',
+        'CACCO',
         'CTO',
       ];
       bool useCustomRoute = false;
@@ -5188,7 +5187,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     final bool supportsMultiSend =
         ['Memo', 'Announcement'].contains(documentType);
 
-    // Payroll uses a fixed route: HR → CBO → ACCOUNTING → CAO → CTO
+    // Payroll uses a fixed route: HR → CBO → CACCO → CTO
     final bool isPayrollFixedRoute = documentType.toLowerCase() == 'payroll';
     final List<String> payrollRoute = ['HR', 'CBO', 'CACCO', 'CTO'];
     final int payrollUploaderIndex =
@@ -5693,7 +5692,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                                 '/home', (route) => false);
                           }
                         } else if (isPayrollFixedRoute && !useCustomRoute) {
-                          // Payroll fixed route: HR → CBO → ACCOUNTING → CAO → CTO
+                          // Payroll fixed route: HR → CBO → CACCO → CTO
                           final routingQueue = payrollRoute.join(',');
                           final ok = await _uploadToTrackingPhp(
                             timestamp: timestamp,
