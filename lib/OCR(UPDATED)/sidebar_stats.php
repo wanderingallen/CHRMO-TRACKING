@@ -17,10 +17,10 @@ $adminRoles = ['admin', 'administrator', 'superadmin', 'super_admin'];
 if (isset($_SESSION['user_role']) && in_array(strtolower(trim($_SESSION['user_role'])), $adminRoles)) {
     $__ssIsAdmin = true;
 }
-if (!$__ssIsAdmin) {
-    $__ssDept = strtoupper(trim((string)($_SESSION['user_department'] ?? $_SESSION['department'] ?? '')));
-    if ($__ssDept === 'ACCOUNT' || $__ssDept === 'ACCOUNTING') {
-        $__ssDept = 'CACCO';
+if (!$__ssIsAdmin && !empty($_SESSION['user_department'])) {
+    $__ssDept = strtoupper(trim($_SESSION['user_department']));
+    if ($__ssDept === 'ACCOUNT') {
+        $__ssDept = 'ACCOUNTING';
     }
 }
 
@@ -82,7 +82,7 @@ if (!$__ssIsAdmin && $__ssDept !== '') {
         }
         $stmtT->close();
     }
-} elseif ($__ssIsAdmin) {
+} else {
     if ($res = $connection->query("SELECT COUNT(*) AS c FROM tracking WHERE UPPER(TRIM(COALESCE(status,''))) <> 'ARCHIVED'")) {
         if ($row = $res->fetch_assoc()) { $total = (int)$row['c']; }
         $res->free();
@@ -102,7 +102,7 @@ if (!$__ssIsAdmin && $__ssDept !== '') {
         }
         $stmtA->close();
     }
-} elseif ($__ssIsAdmin) {
+} else {
     $sqlArchived = "SELECT COUNT(*) AS c FROM archive";
     if ($resA = $connection->query($sqlArchived)) {
         if ($rowA = $resA->fetch_assoc()) { $archivedToday = (int)$rowA['c']; }

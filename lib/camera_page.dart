@@ -262,18 +262,11 @@ Uint8List _applyDocumentFilterIsolate(Map<String, dynamic> args) {
   if (decodedRaw == null) return bytes;
   img.Image image = img.bakeOrientation(decodedRaw);
 
-  // Downscale large images before expensive pixel ops for faster OCR preprocessing.
-  final maxDimension = filterName == 'enhance' ? 1800 : 2200;
-  final longest = max(image.width, image.height);
-  if (longest > maxDimension) {
-    final scale = maxDimension / longest;
-    image = img.copyResize(
-      image,
-      width: (image.width * scale).round().clamp(1, image.width),
-      height: (image.height * scale).round().clamp(1, image.height),
-      interpolation: img.Interpolation.linear,
-    );
-  }
+  // Always work in RGB8 for predictable pixel ops.
+  image = img.copyResize(image,
+      width: image.width,
+      height: image.height,
+      interpolation: img.Interpolation.linear);
 
   switch (filterName) {
     case 'grayscale':
@@ -399,7 +392,7 @@ Uint8List _applyDocumentFilterIsolate(Map<String, dynamic> args) {
       break;
   }
 
-  return Uint8List.fromList(img.encodeJpg(image, quality: 90));
+  return Uint8List.fromList(img.encodeJpg(image, quality: 98));
 }
 
 String _generateMobileTimestamp() {
@@ -468,7 +461,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
   // Google ML Kit enhanced features
   bool _useEnhancedTextRecognition = true;
-  TextRecognizer? _ocrRecognizer;
   final List<String> _documentTypes = [];
   double _documentConfidence = 0.0;
 
@@ -1166,11 +1158,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     debugPrint('✅ Google ML Kit enhanced text recognition initialized');
   }
 
-  TextRecognizer _getOrCreateTextRecognizer() {
-    return _ocrRecognizer ??=
-        TextRecognizer(script: TextRecognitionScript.latin);
-  }
-
   // CamScanner-like workflow methods
   Future<void> _captureDocument() async {
     try {
@@ -1839,8 +1826,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     try {
       final inputImage = InputImage.fromFilePath(imagePath);
 
-      final recognizer = _getOrCreateTextRecognizer();
+      final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
       final result = await recognizer.processImage(inputImage);
+      recognizer.close();
 
       // Calculate average confidence
       double totalConfidence = 0.0;
@@ -1886,7 +1874,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// Performs OCR on a single page and returns just the recognized text (for multi-page processing)
   /// Preprocesses the image with enhance filter for better text recognition.
   Future<String> _performOcrOnPage(String imagePath) async {
-    String? tempOcrImagePath;
     try {
       // Preprocess image for better OCR: apply enhance filter in isolate
       String ocrImagePath = imagePath;
@@ -1903,36 +1890,40 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             dirPath, 'OCR_${DateTime.now().millisecondsSinceEpoch}.jpg');
         await File(tempPath).writeAsBytes(enhancedBytes);
         ocrImagePath = tempPath;
-        tempOcrImagePath = tempPath;
       } catch (e) {
         debugPrint('[OCR] Image preprocessing failed, using original: $e');
       }
 
       final inputImage = InputImage.fromFilePath(ocrImagePath);
-      final recognizer = _getOrCreateTextRecognizer();
+      final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
       final result = await recognizer.processImage(inputImage);
+      recognizer.close();
 
       // If preprocessed image yielded poor results, retry with original
       if (result.text.trim().length < 10 && ocrImagePath != imagePath) {
         debugPrint(
             '[OCR] Enhanced image yielded poor results, retrying with original...');
         final origInput = InputImage.fromFilePath(imagePath);
-        final origResult = await recognizer.processImage(origInput);
+        final origRecognizer =
+            TextRecognizer(script: TextRecognitionScript.latin);
+        final origResult = await origRecognizer.processImage(origInput);
+        origRecognizer.close();
         if (origResult.text.trim().length > result.text.trim().length) {
           return _buildCleanedOcrText(origResult);
         }
+      }
+
+      // Clean up temp file
+      if (ocrImagePath != imagePath) {
+        try {
+          await File(ocrImagePath).delete();
+        } catch (_) {}
       }
 
       return _buildCleanedOcrText(result);
     } catch (e) {
       debugPrint('OCR error on page $imagePath: $e');
       return '[OCR failed]';
-    } finally {
-      if (tempOcrImagePath != null) {
-        try {
-          await File(tempOcrImagePath).delete();
-        } catch (_) {}
-      }
     }
   }
 
@@ -2248,7 +2239,8 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       final List<String> payrollRoute = [
         'HR',
         'CBO',
-        'CACCO',
+        'ACCOUNTING',
+        'CAO',
         'CTO',
       ];
       bool useCustomRoute = false;
@@ -3241,7 +3233,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     if (supportsMultiSend &&
         isMultiSendMode &&
         selectedDepartments.isNotEmpty) {
-      if (documentType == 'Announcement' || documentType == 'Memo') {
+      if (documentType == 'Announcement') {
         int successCount = 0;
         int failCount = 0;
         for (final dept in selectedDepartments) {
@@ -3267,7 +3259,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content:
-                  Text('✅ $documentType sent to $successCount department(s)!'),
+                  Text('✅ Announcement sent to $successCount department(s)!'),
               backgroundColor: Colors.green,
             ),
           );
@@ -3276,6 +3268,40 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
             SnackBar(
               content: Text('⚠️ Sent to $successCount, failed: $failCount'),
               backgroundColor: Colors.orange,
+            ),
+          );
+        }
+      } else {
+        // Memo: sequential routing
+        final firstDept = selectedDepartments.first;
+        final lastDept = selectedDepartments.last;
+        final routingQueue = selectedDepartments.join(',');
+        final ok = await _uploadToTrackingPhp(
+          timestamp: timestamp,
+          documentName: documentName,
+          documentType: documentType,
+          uploadFilePath: uploadFilePath,
+          textPath: textPath,
+          nextDepartment: firstDept,
+          endLocation: lastDept,
+          trackingId: _routingTrackingId,
+          isBroadcast: false,
+          routingQueue: routingQueue,
+        );
+        if (!mounted) return;
+        if (ok) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                  '✅ Memo routed to ${selectedDepartments.length} department(s)! Starting with $firstDept'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('❌ Failed to send memo'),
+              backgroundColor: Colors.red,
             ),
           );
         }
@@ -4692,29 +4718,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       return;
     }
 
-    // For large batches (>5 docs), delegate to chunked upload to prevent
-    // single-request timeouts and excessive memory usage on mobile.
-    if (_capturedDocuments.length > 5) {
-      debugPrint('[batch] ${_capturedDocuments.length} docs exceeds threshold, using chunked upload');
-      final prefs = await SharedPreferences.getInstance();
-      final userDepartment = prefs.getString('user_department') ?? 'General';
-      await _uploadBatchChunked(
-        documents: List<DocumentData>.from(_capturedDocuments),
-        receiverDepartment: userDepartment,
-        endLocation: 'Mobile App Archive',
-        chunkSize: 3,
-        onProgress: (current, total, message) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).hideCurrentSnackBar();
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text(message)),
-            );
-          }
-        },
-      );
-      return;
-    }
-
     // Get user data from SharedPreferences
     final prefs = await SharedPreferences.getInstance();
     final userName = prefs.getString('user_name') ?? 'Unknown User';
@@ -4765,41 +4768,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       request.fields['department'] = userDepartment;
       request.fields['fileTypeIcon'] = 'jpg'; // Default for batch uploads
 
-      // FIX: Generate a batch_id so multi-page uploads are linked together.
-      // Without this, merge_documents.php cannot find sibling pages and only
-      // displays the first page when clicking "View Document".
-      final batchId =
-          'BATCH_${DateTime.now().millisecondsSinceEpoch}_${_capturedDocuments.length}';
-      request.fields['batch_id'] = batchId;
-
-      // FIX (Issue 6): Parallelize OCR computation for all documents that need it.
-      // Previously each document's OCR was computed sequentially in the loop,
-      // causing 2+ photo uploads to take proportionally longer.
-      final ocrFutures = <int, Future<String>>{};
-      for (int i = 0; i < _capturedDocuments.length; i++) {
-        final doc = _capturedDocuments[i];
-        String existingOcr = '';
-        if (doc.pageTexts.isNotEmpty) {
-          existingOcr = doc.pageTexts.join('\n\n').trim();
-        } else {
-          existingOcr = doc.recognizedText.trim();
-        }
-        if (existingOcr.isEmpty || existingOcr == 'No text recognized yet') {
-          final filePath =
-              doc.filteredPath ?? doc.croppedPath ?? doc.imagePath;
-          ocrFutures[i] = _performOcrOnPage(filePath).then((v) => v.trim()).catchError((_) => '');
-        }
-      }
-      // Wait for all OCR jobs to complete in parallel
-      final ocrResults = <int, String>{};
-      if (ocrFutures.isNotEmpty) {
-        final entries = ocrFutures.entries.toList();
-        final results = await Future.wait(entries.map((e) => e.value));
-        for (int j = 0; j < entries.length; j++) {
-          ocrResults[entries[j].key] = results[j];
-        }
-      }
-
       // 3. Loop through all captured documents and add them as files
       for (int i = 0; i < _capturedDocuments.length; i++) {
         DocumentData doc = _capturedDocuments[i];
@@ -4824,17 +4792,19 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
           ocrText = doc.recognizedText.trim();
         }
 
-        // Use pre-computed parallel OCR result if available (Issue 6 fix)
-        if ((ocrText.isEmpty || ocrText == 'No text recognized yet') &&
-            ocrResults.containsKey(i)) {
-          ocrText = ocrResults[i] ?? '';
-          if (ocrText.isNotEmpty) {
+        // If OCR was never computed for this captured image, compute it now
+        if (ocrText.isEmpty || ocrText == 'No text recognized yet') {
+          try {
+            final computed = await _performOcrOnPage(filePath);
+            ocrText = computed.trim();
             doc = doc.copyWith(
               recognizedText: ocrText,
               pageTexts:
                   ocrText.isNotEmpty ? <String>[ocrText] : const <String>[],
             );
             _capturedDocuments[i] = doc;
+          } catch (_) {
+            // Keep empty; server will store blank/placeholder
           }
         }
 
@@ -4845,9 +4815,6 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
 
         request.fields['mobile_timestamp[$i]'] = doc.mobileTimestamp;
         request.fields['doc_hash[$i]'] = doc.docHash;
-
-        // FIX: Send page_number so merge_documents.php can order and find all pages
-        request.fields['page_number[$i]'] = (i + 1).toString();
 
         // Send per-page OCR for multi-page search support
         if (doc.pageTexts.isNotEmpty) {
@@ -5187,9 +5154,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     final bool supportsMultiSend =
         ['Memo', 'Announcement'].contains(documentType);
 
-    // Payroll uses a fixed route: HR → CBO → CACCO → CTO
+    // Payroll uses a fixed route: HR → CBO → ACCOUNTING → CAO → CTO
     final bool isPayrollFixedRoute = documentType.toLowerCase() == 'payroll';
-    final List<String> payrollRoute = ['HR', 'CBO', 'CACCO', 'CTO'];
+    final List<String> payrollRoute = ['HR', 'CBO', 'ACCOUNTING', 'CAO', 'CTO'];
     final int payrollUploaderIndex =
         payrollRoute.indexWhere((d) => d.toUpperCase() == userDepartment);
     final String payrollFixedNextDepartment = payrollUploaderIndex >= 0
@@ -5692,7 +5659,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                                 '/home', (route) => false);
                           }
                         } else if (isPayrollFixedRoute && !useCustomRoute) {
-                          // Payroll fixed route: HR → CBO → CACCO → CTO
+                          // Payroll fixed route: HR → CBO → ACCOUNTING → CAO → CTO
                           final routingQueue = payrollRoute.join(',');
                           final ok = await _uploadToTrackingPhp(
                             timestamp: timestamp,
@@ -8200,10 +8167,6 @@ ${DateTime.now().toString()}
 
     // Clean up batch processor temp files
     _batchProcessor.clearTemporaryFiles();
-
-    // Clean up OCR recognizer
-    _ocrRecognizer?.close();
-    _ocrRecognizer = null;
 
     debugPrint('✅ Camera page resources disposed');
     super.dispose();
