@@ -3836,7 +3836,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             }
           }
 
-          $insSql = "INSERT INTO tracking (type, employee_name, date_submitted, current_holder, end_location, status, department, file_type_icon, doc_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+          $insSql = "INSERT INTO tracking (type, employee_name, date_submitted, current_holder, end_location, status, department, file_type_icon, doc_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
           $stmt = $connection->prepare($insSql);
           if (!$stmt) {
             header("Location: tracking.php?status=error");
@@ -3868,11 +3868,11 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             exit();
           }
           $stmt->close();
-          header("Location: tracking.php?status=added" . ($newFirstId ? "&id=" . urlencode((string)$newFirstId) . "&refresh=1" : "&refresh=1"));
+          header("Location: tracking.php?status=added" . ($newFirstId ? "&id=" . urlencode((string)$newFirstId) . "&refresh=1" : "&refresh=1") . "&_=" . time());
           exit();
         } else {
           // Add new document record
-          $sql = "INSERT INTO tracking (type, employee_name, date_submitted, current_holder, end_location, status, department, file_type_icon, doc_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+          $sql = "INSERT INTO tracking (type, employee_name, date_submitted, current_holder, end_location, status, department, file_type_icon, doc_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())";
           $stmt = $connection->prepare($sql);
           $stmt->bind_param("sssssssss", $type, $employee, $date, $holder, $endLocation, $status, $department, $fileTypeIcon, $doc_hash);
         }
@@ -3966,7 +3966,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
 
         $redirectStatus = empty($id) ? "added" : "updated";
         $redirectId = $affected_id ? (string)$affected_id : '';
-        header("Location: tracking.php?status=" . $redirectStatus . ($redirectId !== '' ? "&id=" . urlencode($redirectId) : "") . "&refresh=1");
+        header("Location: tracking.php?status=" . $redirectStatus . ($redirectId !== '' ? "&id=" . urlencode($redirectId) : "") . "&refresh=1&_=" . time());
         exit();
     } else {
         error_log("Error: " . $stmt->error);
@@ -5124,7 +5124,7 @@ $sqlPage = "SELECT
             FROM tracking
             LEFT JOIN control ON control.user = tracking.employee_name
             $where
-            ORDER BY tracking.date_submitted DESC, tracking.id DESC
+            ORDER BY COALESCE(tracking.created_at, tracking.date_submitted) DESC, tracking.id DESC
             LIMIT ? OFFSET ?";
 $stmtPage = $connection->prepare($sqlPage);
 if ($stmtPage) {
@@ -8389,6 +8389,7 @@ $connection->close();
     // Department scope for client-side Firestore listener filtering
     window.__trackingIsAdmin = <?php echo $__isAdmin ? 'true' : 'false'; ?>;
     window.__trackingUserDept = <?php echo json_encode(!empty($_SESSION['user_department']) ? strtoupper(trim($_SESSION['user_department'])) : ''); ?>;
+    window.__trackingHideWebRouting = true;
 
     let currentSortColumn = null;
     let currentSortDirection = 'asc'; // 'asc' or 'desc'
@@ -8776,6 +8777,7 @@ $connection->close();
     }
 
     function canShowFinalizeAction(doc) {
+      if (window.__trackingHideWebRouting) return false;
       if (!doc || window.__trackingIsAdmin) return false;
       const status = (doc.status || '').toString().trim().toLowerCase();
       if (!(status === 'in review' || status === 'received')) return false;
@@ -9005,14 +9007,14 @@ $connection->close();
                   ${(doc.status === 'Archived' || doc.status === 'Rejected') ? 'disabled' : ''}>
                   <i class="fas fa-archive"></i> Archive
                 </button>
-                ${(!window.__trackingIsAdmin && window.__trackingUserDept &&
+                ${(!window.__trackingHideWebRouting && !window.__trackingIsAdmin && window.__trackingUserDept &&
                    doc.current_holder && departmentsMatch(doc.current_holder, window.__trackingUserDept) &&
                    doc.status === 'Pending')
                   ? `<button class="action-button" style="background:var(--success-color,#22c55e);color:#fff;" title="Mark as Received"
                        onclick="webReceiveDocument('${doc.id}')">
                        <i class="fas fa-check-circle"></i> Receive
                      </button>` : ''}
-                ${(!window.__trackingIsAdmin && window.__trackingUserDept &&
+                ${(!window.__trackingHideWebRouting && !window.__trackingIsAdmin && window.__trackingUserDept &&
                    doc.current_holder && departmentsMatch(doc.current_holder, window.__trackingUserDept) &&
                    (doc.status === 'In Review' || doc.status === 'Received'))
                   ? `<button class="action-button" style="background:var(--brand-primary,#6868AC);color:#fff;" title="Route to Department"
@@ -10773,6 +10775,7 @@ $connection->close();
 
     // Open camera/file capture for final document update
     function openFinalDocumentCapture(docId, docType) {
+        if (window.__trackingHideWebRouting) return;
         const fileInput = document.createElement('input');
         fileInput.type = 'file';
         fileInput.accept = 'image/*,.pdf';
@@ -11771,6 +11774,26 @@ $connection->close();
       window.mergeTrackingDocuments = mergeTrackingDocuments;
       window.refreshTrackingRow = refreshTrackingRow;
 
+      function parseTrackingTimestamp(sourceDateStr) {
+        const raw = String(sourceDateStr || '').trim();
+        if (!raw) return NaN;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+          const today = new Date();
+          const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+          if (raw === todayStr) return Date.now();
+          return new Date(`${raw}T00:00:00`).getTime();
+        }
+        const normalized = raw.replace(' ', 'T');
+        const parsed = Date.parse(normalized);
+        return isFinite(parsed) ? parsed : Date.parse(raw);
+      }
+
+      function escapeCssIdent(value) {
+        const raw = String(value || '');
+        if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(raw);
+        return raw.replace(/["\\]/g, '\\$&');
+      }
+
       function scheduleTrackingRender() {
         if (typeof window.applyFiltersAndSearch !== 'function') return;
         if (window.__trackingRenderQueued) return;
@@ -11860,7 +11883,7 @@ $connection->close();
             return { overdue_seconds: 0, overdue_label: 'Cleared', overdue_full_label: 'Cleared', overdue_state: 'cleared' };
           }
 
-          const ts = sourceDateStr ? Date.parse(sourceDateStr) : NaN;
+          const ts = parseTrackingTimestamp(sourceDateStr);
           if (!isFinite(ts)) {
             return { overdue_seconds: 0, overdue_label: '—', overdue_full_label: 'No timestamp available', overdue_state: 'na' };
           }
@@ -11944,6 +11967,7 @@ $connection->close();
       // Check for status messages from PHP redirection
       const urlParams = new URLSearchParams(window.location.search);
       const status = urlParams.get('status');
+      const affectedDocId = urlParams.get('id') || urlParams.get('routed_id') || '';
       if (status) {
           if (status === 'added') {
               showToast('Document added successfully!', 'success');
@@ -11960,8 +11984,22 @@ $connection->close();
           } else if (status === 'error' || status === 'delete_error' || status === 'route_error' || status === 'archive_error') {
               showToast('An error occurred. Please try again.', 'error');
           }
+          if ((status === 'added' || status === 'updated') && affectedDocId && typeof refreshTrackingRow === 'function') {
+              refreshTrackingRow(affectedDocId).then((changed) => {
+                const row = document.querySelector(`tr[data-id="${escapeCssIdent(affectedDocId)}"]`);
+                if (row) {
+                  row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  row.style.boxShadow = '0 0 0 3px rgba(34,197,94,.35)';
+                  setTimeout(() => { row.style.boxShadow = ''; }, 2400);
+                } else if (!changed && status === 'added') {
+                  loadTrackingFromServer();
+                }
+              }).catch(() => {});
+          }
           // Remove status parameter from URL to prevent re-showing toast on refresh
           urlParams.delete('status');
+          urlParams.delete('refresh');
+          urlParams.delete('_');
           const newUrl = window.location.pathname + (urlParams.toString() ? '?' + urlParams.toString() : '');
           window.history.replaceState({}, document.title, newUrl);
       }
@@ -12267,6 +12305,7 @@ $connection->close();
     }
 
     async function webReceiveDocument(docId) {
+      if (window.__trackingHideWebRouting) return;
       const confirmed = await showReceiveConfirmModal(docId);
       if (!confirmed) return;
       const lockKey = 'receive:' + String(docId || '');
@@ -12330,6 +12369,7 @@ $connection->close();
     }
 
     function openRouteModal(docId, docType, empName, currentHolder, endLoc, mobileTs, docHash, filePath, routingQueue, notificationId) {
+      if (window.__trackingHideWebRouting) return;
       // Remove existing modal if any
       const existing = document.getElementById('routeDocumentModal');
       if (existing) existing.remove();

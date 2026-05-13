@@ -6,6 +6,7 @@
 
 // Environment (development or production)
 define('ENVIRONMENT', 'development'); // Change to 'production' for live deployment
+date_default_timezone_set('Asia/Manila');
 
 // Database Configuration (use the schema from chrmo_db.sql)
 define('DB_HOST', 'localhost');

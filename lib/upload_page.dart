@@ -199,9 +199,10 @@ class _UploadPageState extends State<UploadPage>
         });
 
         if (file.path != null && _isImageFile(file.name)) {
+          TextRecognizer? textRecognizer;
           try {
             final inputImage = InputImage.fromFilePath(file.path!);
-            final textRecognizer =
+            textRecognizer =
                 TextRecognizer(script: TextRecognitionScript.latin);
             final RecognizedText recognizedText =
                 await textRecognizer.processImage(inputImage);
@@ -239,22 +240,18 @@ class _UploadPageState extends State<UploadPage>
                 }
               }
             }
-
-            textRecognizer.close();
           } catch (e) {
             allRecognizedText.writeln('Error processing ${file.name}: $e');
+          } finally {
+            textRecognizer?.close();
           }
         }
-
-        await Future.delayed(const Duration(milliseconds: 300));
       }
 
       setState(() {
         _uploadProgress = 0.9;
         _uploadMessage = 'Finalizing OCR results...';
       });
-
-      await Future.delayed(const Duration(milliseconds: 500));
 
       setState(() {
         _isUploading = false;

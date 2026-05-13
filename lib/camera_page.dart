@@ -1883,7 +1883,16 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
   /// Preprocesses the image with enhance filter for better text recognition.
   Future<String> _performOcrOnPage(String imagePath) async {
     try {
-      // Preprocess image for better OCR: apply enhance filter in isolate
+      final inputImage = InputImage.fromFilePath(imagePath);
+      final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
+      final result = await recognizer.processImage(inputImage);
+      recognizer.close();
+
+      final initialText = _buildCleanedOcrText(result);
+      if (initialText.trim().length >= 10) {
+        return initialText;
+      }
+
       String ocrImagePath = imagePath;
       try {
         final bytes = await File(imagePath).readAsBytes();
@@ -1902,33 +1911,25 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
         debugPrint('[OCR] Image preprocessing failed, using original: $e');
       }
 
-      final inputImage = InputImage.fromFilePath(ocrImagePath);
-      final recognizer = TextRecognizer(script: TextRecognitionScript.latin);
-      final result = await recognizer.processImage(inputImage);
-      recognizer.close();
+      if (ocrImagePath == imagePath) return initialText;
 
-      // If preprocessed image yielded poor results, retry with original
-      if (result.text.trim().length < 10 && ocrImagePath != imagePath) {
-        debugPrint(
-            '[OCR] Enhanced image yielded poor results, retrying with original...');
-        final origInput = InputImage.fromFilePath(imagePath);
-        final origRecognizer =
-            TextRecognizer(script: TextRecognitionScript.latin);
-        final origResult = await origRecognizer.processImage(origInput);
-        origRecognizer.close();
-        if (origResult.text.trim().length > result.text.trim().length) {
-          return _buildCleanedOcrText(origResult);
-        }
-      }
+      final enhancedInput = InputImage.fromFilePath(ocrImagePath);
+      final enhancedRecognizer =
+          TextRecognizer(script: TextRecognitionScript.latin);
+      final enhancedResult =
+          await enhancedRecognizer.processImage(enhancedInput);
+      enhancedRecognizer.close();
+      final enhancedText = _buildCleanedOcrText(enhancedResult);
 
-      // Clean up temp file
       if (ocrImagePath != imagePath) {
         try {
           await File(ocrImagePath).delete();
         } catch (_) {}
       }
 
-      return _buildCleanedOcrText(result);
+      return enhancedText.trim().length > initialText.trim().length
+          ? enhancedText
+          : initialText;
     } catch (e) {
       debugPrint('OCR error on page $imagePath: $e');
       return '[OCR failed]';
