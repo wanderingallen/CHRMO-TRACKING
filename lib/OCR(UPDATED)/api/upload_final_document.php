@@ -19,6 +19,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 require_once __DIR__ . '/file_crypto.php';
 require_once __DIR__ . '/archive_storage.php';
 require_once __DIR__ . '/../config.php';
+require_once __DIR__ . '/../firestore_client.php';
 
 // Database connection
 $connection = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME);
@@ -260,6 +261,39 @@ if ($stmt->execute()) {
         $hist->bind_param('iis', $docId, $actorId, $notes);
         $hist->execute();
         $hist->close();
+    }
+
+    try {
+        $syncRow = null;
+        if ($syncStmt = $connection->prepare("SELECT id, type, employee_name, department, current_holder, end_location, status, file_path, file_type_icon, doc_hash, mobile_timestamp, date_submitted, created_at, routing_queue, route_step FROM tracking WHERE id = ? LIMIT 1")) {
+            $syncStmt->bind_param('i', $docId);
+            if ($syncStmt->execute()) {
+                $syncRes = $syncStmt->get_result();
+                $syncRow = $syncRes ? $syncRes->fetch_assoc() : null;
+            }
+            $syncStmt->close();
+        }
+        if ($syncRow && function_exists('firestore_upsert_tracking')) {
+            firestore_upsert_tracking((string)$docId, [
+                'id' => (int)$docId,
+                'type' => (string)($syncRow['type'] ?? ''),
+                'employee_name' => (string)($syncRow['employee_name'] ?? ''),
+                'department' => (string)($syncRow['department'] ?? ''),
+                'current_holder' => (string)($syncRow['current_holder'] ?? ''),
+                'end_location' => (string)($syncRow['end_location'] ?? ''),
+                'status' => (string)($syncRow['status'] ?? 'Completed'),
+                'file_path' => (string)($syncRow['file_path'] ?? $relativePath),
+                'file_type_icon' => (string)($syncRow['file_type_icon'] ?? $finalExt),
+                'doc_hash' => (string)($syncRow['doc_hash'] ?? ''),
+                'mobile_timestamp' => (string)($syncRow['mobile_timestamp'] ?? ''),
+                'date_submitted' => (string)($syncRow['date_submitted'] ?? ''),
+                'created_at' => (string)($syncRow['created_at'] ?? ''),
+                'routing_queue' => (string)($syncRow['routing_queue'] ?? ''),
+                'route_step' => (int)($syncRow['route_step'] ?? 0),
+                'updatedAt' => (int)round(microtime(true) * 1000),
+            ]);
+        }
+    } catch (Throwable $t) {
     }
     
     $stmt->close();

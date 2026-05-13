@@ -53,6 +53,13 @@ class _TextElementWithPosition {
 Future<List<String>> _fetchDepartmentsForMobile() async {
   try {
     final prefs = await SharedPreferences.getInstance();
+    String canonicalDepartment(String value) {
+      final up = value.trim().toUpperCase();
+      if (up.isEmpty) return '';
+      if (up == 'ACCOUNT' || up == 'ACCOUNTING' || up == 'CAO') return 'CACCO';
+      return up;
+    }
+
     String normalizeRoot(String value) {
       var out = value.trim();
       out = out.replaceFirst(RegExp(r"/api/?$", caseSensitive: false), '');
@@ -105,7 +112,8 @@ Future<List<String>> _fetchDepartmentsForMobile() async {
 
           final decoded = json.decode(r.body);
           final list = extractDepartments(decoded)
-              .map((e) => e.toUpperCase())
+              .map(canonicalDepartment)
+              .where((e) => e.isNotEmpty)
               .toSet()
               .toList()
             ..sort();
@@ -2239,8 +2247,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
       final List<String> payrollRoute = [
         'HR',
         'CBO',
-        'ACCOUNTING',
-        'CAO',
+        'CACCO',
         'CTO',
       ];
       bool useCustomRoute = false;
@@ -5154,9 +5161,9 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
     final bool supportsMultiSend =
         ['Memo', 'Announcement'].contains(documentType);
 
-    // Payroll uses a fixed route: HR → CBO → ACCOUNTING → CAO → CTO
+    // Payroll uses a fixed route: HR → CBO → CACCO → CTO
     final bool isPayrollFixedRoute = documentType.toLowerCase() == 'payroll';
-    final List<String> payrollRoute = ['HR', 'CBO', 'ACCOUNTING', 'CAO', 'CTO'];
+    final List<String> payrollRoute = ['HR', 'CBO', 'CACCO', 'CTO'];
     final int payrollUploaderIndex =
         payrollRoute.indexWhere((d) => d.toUpperCase() == userDepartment);
     final String payrollFixedNextDepartment = payrollUploaderIndex >= 0
@@ -5659,7 +5666,7 @@ class _CameraPageState extends State<CameraPage> with TickerProviderStateMixin {
                                 '/home', (route) => false);
                           }
                         } else if (isPayrollFixedRoute && !useCustomRoute) {
-                          // Payroll fixed route: HR → CBO → ACCOUNTING → CAO → CTO
+                          // Payroll fixed route: HR → CBO → CACCO → CTO
                           final routingQueue = payrollRoute.join(',');
                           final ok = await _uploadToTrackingPhp(
                             timestamp: timestamp,

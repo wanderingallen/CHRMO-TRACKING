@@ -492,8 +492,8 @@ class _DashboardPageState extends State<DashboardPage>
                 onPressed: () => Navigator.pop(ctx, true),
                 style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF6868AC)),
-                child:
-                    const Text('Archive', style: TextStyle(color: Colors.white)),
+                child: const Text('Archive',
+                    style: TextStyle(color: Colors.white)),
               ),
             ],
           ),
@@ -831,7 +831,8 @@ class _DashboardPageState extends State<DashboardPage>
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete Document'),
-        content: Text('Are you sure you want to delete "$docTitle"? This action cannot be undone.'),
+        content: Text(
+            'Are you sure you want to delete "$docTitle"? This action cannot be undone.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -1478,15 +1479,19 @@ class _DashboardPageState extends State<DashboardPage>
                                                 ? apiUrl
                                                 : path);
                                         final imageProbe =
-                                            path.trim().isNotEmpty ? path : fullUrl;
-                                        final showImage = isImage(imageProbe);
-                                        final lowerProbe = (path.trim().isNotEmpty
+                                            path.trim().isNotEmpty
                                                 ? path
-                                                : (name.trim().isNotEmpty
-                                                    ? name
-                                                    : fullUrl))
-                                            .toLowerCase();
-                                        final isPdf = lowerProbe.endsWith('.pdf');
+                                                : fullUrl;
+                                        final showImage = isImage(imageProbe);
+                                        final lowerProbe =
+                                            (path.trim().isNotEmpty
+                                                    ? path
+                                                    : (name.trim().isNotEmpty
+                                                        ? name
+                                                        : fullUrl))
+                                                .toLowerCase();
+                                        final isPdf =
+                                            lowerProbe.endsWith('.pdf');
 
                                         return Card(
                                           elevation: 2,
@@ -1984,7 +1989,8 @@ class _DashboardPageState extends State<DashboardPage>
                                                                         if (isPdf) {
                                                                           await _openPdf(
                                                                             fullUrl,
-                                                                            title: display,
+                                                                            title:
+                                                                                display,
                                                                           );
                                                                           return;
                                                                         }
@@ -1998,9 +2004,11 @@ class _DashboardPageState extends State<DashboardPage>
                                                                           );
                                                                           return;
                                                                         }
-                                                                        await _openUrl(fullUrl);
+                                                                        await _openUrl(
+                                                                            fullUrl);
                                                                       } catch (_) {
-                                                                        await _openUrl(fullUrl);
+                                                                        await _openUrl(
+                                                                            fullUrl);
                                                                       }
                                                                     },
                                                               icon: const Icon(
@@ -4278,9 +4286,8 @@ class _DashboardPageState extends State<DashboardPage>
                   ? data['details'].toString()
                   : (data['error']?.toString() ?? data['message']?.toString()))
               : null;
-          throw Exception((err == null || err.trim().isEmpty)
-              ? 'Upload failed'
-              : err);
+          throw Exception(
+              (err == null || err.trim().isEmpty) ? 'Upload failed' : err);
         }
       } else {
         throw Exception('Server error: ${response.statusCode}');
@@ -5055,10 +5062,11 @@ class _DashboardPageState extends State<DashboardPage>
       String normalizeDepartment(String raw) {
         final up = raw.trim().toUpperCase();
         if (up.isEmpty) return '';
-        if (up.contains('ACCOUNTING') || up.contains('CACCO')) return 'CACCO';
+        if (up.contains('ACCOUNTING') ||
+            up.contains('CACCO') ||
+            up.contains('CAO')) return 'CACCO';
         if (up == 'HR' || up.contains('HUMAN RESOURCE')) return 'HR';
         if (up.contains('CBO')) return 'CBO';
-        if (up.contains('CAO')) return 'CAO';
         if (up.contains('CTO')) return 'CTO';
         if (up.contains('CPDO')) return 'CPDO';
         if (up.contains('GSO')) return 'GSO';
@@ -8993,7 +9001,8 @@ class _DashboardPageState extends State<DashboardPage>
                                     case 'archive':
                                       _archiveDocumentFromServer(
                                         trackingId: normalizedTrackingId,
-                                        mobileTimestamp: normalizedMobileTimestamp,
+                                        mobileTimestamp:
+                                            normalizedMobileTimestamp,
                                         docHash: normalizedDocHash,
                                         filePath: resolvedFilePath,
                                         docTitle: title,
@@ -9030,7 +9039,9 @@ class _DashboardPageState extends State<DashboardPage>
                                   ),
                                   PopupMenuItem<String>(
                                     value: 'archive',
-                                    enabled: alreadyReceived && (atEndLocation || serverStatus == 'completed'),
+                                    enabled: alreadyReceived &&
+                                        (atEndLocation ||
+                                            serverStatus == 'completed'),
                                     child: const Text('Archive'),
                                   ),
                                   const PopupMenuItem<String>(
@@ -9039,7 +9050,8 @@ class _DashboardPageState extends State<DashboardPage>
                                   ),
                                   const PopupMenuItem<String>(
                                     value: 'delete',
-                                    child: Text('Delete', style: TextStyle(color: Colors.red)),
+                                    child: Text('Delete',
+                                        style: TextStyle(color: Colors.red)),
                                   ),
                                 ],
                               ),
@@ -10174,8 +10186,8 @@ extension _RecentUploadOpeners on _RecentUploadPageState {
                 onPressed: () => Navigator.pop(ctx, true),
                 style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF6868AC)),
-                child:
-                    const Text('Archive', style: TextStyle(color: Colors.white)),
+                child: const Text('Archive',
+                    style: TextStyle(color: Colors.white)),
               ),
             ],
           ),

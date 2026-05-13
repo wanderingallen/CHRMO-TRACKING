@@ -8,6 +8,27 @@ Security::require_login();
 $id = isset($_GET['id']) ? trim($_GET['id']) : '';
 $requestedPathRaw = isset($_GET['path']) ? trim((string)$_GET['path']) : '';
 $debug = isset($_GET['debug']) && (string)$_GET['debug'] === '1';
+function renderFileUnavailablePage($storedPath = '', $debugData = null) {
+    http_response_code(404);
+    header('Content-Type: text/html; charset=utf-8');
+    $safePath = htmlspecialchars((string)$storedPath, ENT_QUOTES, 'UTF-8');
+    echo '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">';
+    echo '<title>Document unavailable</title>';
+    echo '<style>body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#0b1220;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px;box-sizing:border-box}.card{max-width:720px;background:#111c33;border:1px solid rgba(148,163,184,.25);border-radius:18px;padding:24px;box-shadow:0 20px 60px rgba(0,0,0,.25)}h1{font-size:22px;margin:0 0 10px;color:#fff}p{line-height:1.55;color:#cbd5e1}.path{margin-top:14px;padding:12px;border-radius:12px;background:#0b1220;border:1px solid rgba(251,146,60,.35);color:#fed7aa;word-break:break-all;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:13px}.hint{margin-top:16px;color:#94a3b8;font-size:14px}</style>';
+    echo '</head><body><div class="card">';
+    echo '<h1>Document file is not available on the server</h1>';
+    echo '<p>This record points to a local desktop/mobile path or a missing uploaded file. Other users can only preview files that were uploaded to server storage.</p>';
+    if ($safePath !== '') {
+        echo '<div class="path">' . $safePath . '</div>';
+    }
+    echo '<div class="hint">Fix: re-upload or complete the document so it is saved under the server uploads folder, then open the document again.</div>';
+    if (is_array($debugData)) {
+        echo '<pre class="path">' . htmlspecialchars(json_encode($debugData, JSON_PRETTY_PRINT), ENT_QUOTES, 'UTF-8') . '</pre>';
+    }
+    echo '</div></body></html>';
+    exit();
+}
+
 if ($id === '' || !preg_match('/^\d+$/', $id)) {
     http_response_code(400);
     echo 'Bad request';
@@ -74,19 +95,11 @@ $isInvalidPath = (
 );
 if ($isInvalidPath) {
     if (!empty($requestedPathRaw)) {
-        http_response_code(404);
-        header('Content-Type: application/json; charset=utf-8');
-        echo json_encode([
-            'error' => 'file_not_found',
-            'message' => 'Document file not available on server.',
-            'stored_path' => $requestedPathRaw,
-            'debug' => $debug ? [
-                'normalized_path' => $storedPath,
-                'attempts' => [],
-                'dir' => __DIR__,
-            ] : null,
-        ]);
-        exit();
+        renderFileUnavailablePage($requestedPathRaw, $debug ? [
+            'normalized_path' => $storedPath,
+            'attempts' => [],
+            'dir' => __DIR__,
+        ] : null);
     }
     // DB path is invalid (e.g. Android cache). Try to fall back to latest attachment.
     $storedPath = '';
@@ -298,19 +311,11 @@ if ($encPath === '' && (int)$id > 0) {
 }
 
 if ($encPath === '' || !is_file($encPath)) {
-    http_response_code(404);
-    header('Content-Type: application/json; charset=utf-8');
-    echo json_encode([
-        'error' => 'file_not_found',
-        'message' => 'Document file not available on server.',
-        'stored_path' => !empty($requestedPathRaw) ? $requestedPathRaw : (string)($row['file_path'] ?? ''),
-        'debug' => $debug ? [
-            'normalized_path' => $storedPath,
-            'attempts' => $attempts,
-            'dir' => __DIR__,
-        ] : null,
-    ]);
-    exit();
+    renderFileUnavailablePage(!empty($requestedPathRaw) ? $requestedPathRaw : (string)($row['file_path'] ?? ''), $debug ? [
+        'normalized_path' => $storedPath,
+        'attempts' => $attempts,
+        'dir' => __DIR__,
+    ] : null);
 }
 
 if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET')) === 'HEAD') {

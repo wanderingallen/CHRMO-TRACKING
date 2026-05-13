@@ -1471,6 +1471,9 @@ if (isset($_GET['action']) && $_GET['action'] === 'tracking_latest') {
     $__latestDeptParams = [];
     if (!$__isAdmin && !empty($_SESSION['user_department'])) {
         $__lud = strtoupper(trim($_SESSION['user_department']));
+        if ($__lud === 'ACCOUNT' || $__lud === 'ACCOUNTING' || $__lud === 'CAO') {
+            $__lud = 'CACCO';
+        }
         $__latestDeptWhere = ' AND (UPPER(TRIM(department)) = ? OR UPPER(TRIM(current_holder)) = ? OR UPPER(TRIM(end_location)) = ? OR (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \', \'\'))) > 0 AND CAST(COALESCE(route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(routing_queue, \' \', \'\'))) - 1)))';
         $__latestDeptTypes = 'sssss';
         $__latestDeptParams = [$__lud, $__lud, $__lud, $__lud, $__lud];
@@ -1484,6 +1487,9 @@ if (isset($_GET['action']) && $_GET['action'] === 'tracking_latest') {
       $__latestArchDept = $__isAdmin
         ? 'ADMIN'
         : strtoupper(trim($_SESSION['user_department'] ?? $_SESSION['department'] ?? ''));
+      if ($__latestArchDept === 'ACCOUNT' || $__latestArchDept === 'ACCOUNTING' || $__latestArchDept === 'CAO') {
+        $__latestArchDept = 'CACCO';
+      }
       if ($__latestArchDept !== '') {
         $__latestArchiveWhere .= " AND NOT EXISTS (SELECT 1 FROM department_archives da WHERE da.tracking_id = tracking.id AND UPPER(TRIM(da.department)) = ?)";
         $__latestArchiveTypes = 's';
@@ -2061,6 +2067,40 @@ if (isset($_GET['action']) && $_GET['action'] === 'mark_completed') {
         if ($stmt->execute()) {
             $affected = $stmt->affected_rows;
             $stmt->close();
+            try {
+                if (function_exists('firestore_upsert_tracking')) {
+                    $syncRow = null;
+                    if ($syncStmt = $connection->prepare("SELECT id,type,employee_name,department,current_holder,end_location,status,file_path,file_type_icon,doc_hash,mobile_timestamp,date_submitted,created_at,routing_queue,route_step FROM tracking WHERE id=? LIMIT 1")) {
+                        $syncStmt->bind_param('i', $id);
+                        if ($syncStmt->execute()) {
+                            $syncRes = $syncStmt->get_result();
+                            $syncRow = $syncRes ? $syncRes->fetch_assoc() : null;
+                        }
+                        $syncStmt->close();
+                    }
+                    if ($syncRow) {
+                        firestore_upsert_tracking((string)$id, [
+                            'id' => (int)$id,
+                            'type' => (string)($syncRow['type'] ?? ''),
+                            'employee_name' => (string)($syncRow['employee_name'] ?? ''),
+                            'department' => (string)($syncRow['department'] ?? ''),
+                            'current_holder' => (string)($syncRow['current_holder'] ?? ''),
+                            'end_location' => (string)($syncRow['end_location'] ?? ''),
+                            'status' => (string)($syncRow['status'] ?? 'Completed'),
+                            'file_path' => (string)($syncRow['file_path'] ?? ''),
+                            'file_type_icon' => (string)($syncRow['file_type_icon'] ?? ''),
+                            'doc_hash' => (string)($syncRow['doc_hash'] ?? ''),
+                            'mobile_timestamp' => (string)($syncRow['mobile_timestamp'] ?? ''),
+                            'date_submitted' => (string)($syncRow['date_submitted'] ?? ''),
+                            'created_at' => (string)($syncRow['created_at'] ?? ''),
+                            'routing_queue' => (string)($syncRow['routing_queue'] ?? ''),
+                            'route_step' => (int)($syncRow['route_step'] ?? 0),
+                            'updatedAt' => (int)round(microtime(true) * 1000),
+                        ]);
+                    }
+                }
+            } catch (Throwable $t) {
+            }
             tracking_send_json($connection, ['success' => true, 'id' => $id, 'affected' => $affected]);
             exit;
         }
@@ -2272,6 +2312,41 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     }
                     $hist->execute();
                     $hist->close();
+                }
+
+                try {
+                    if (function_exists('firestore_upsert_tracking')) {
+                        $syncRow = null;
+                        if ($syncStmt = $connection->prepare("SELECT id,type,employee_name,department,current_holder,end_location,status,file_path,file_type_icon,doc_hash,mobile_timestamp,date_submitted,created_at,routing_queue,route_step FROM tracking WHERE id=? LIMIT 1")) {
+                            $syncStmt->bind_param('i', $docId);
+                            if ($syncStmt->execute()) {
+                                $syncRes = $syncStmt->get_result();
+                                $syncRow = $syncRes ? $syncRes->fetch_assoc() : null;
+                            }
+                            $syncStmt->close();
+                        }
+                        if ($syncRow) {
+                            firestore_upsert_tracking((string)$docId, [
+                                'id' => (int)$docId,
+                                'type' => (string)($syncRow['type'] ?? ''),
+                                'employee_name' => (string)($syncRow['employee_name'] ?? ''),
+                                'department' => (string)($syncRow['department'] ?? ''),
+                                'current_holder' => (string)($syncRow['current_holder'] ?? ''),
+                                'end_location' => (string)($syncRow['end_location'] ?? ''),
+                                'status' => (string)($syncRow['status'] ?? 'Completed'),
+                                'file_path' => (string)($syncRow['file_path'] ?? $relativePath),
+                                'file_type_icon' => (string)($syncRow['file_type_icon'] ?? $ext),
+                                'doc_hash' => (string)($syncRow['doc_hash'] ?? ''),
+                                'mobile_timestamp' => (string)($syncRow['mobile_timestamp'] ?? ''),
+                                'date_submitted' => (string)($syncRow['date_submitted'] ?? ''),
+                                'created_at' => (string)($syncRow['created_at'] ?? ''),
+                                'routing_queue' => (string)($syncRow['routing_queue'] ?? ''),
+                                'route_step' => (int)($syncRow['route_step'] ?? 0),
+                                'updatedAt' => (int)round(microtime(true) * 1000),
+                            ]);
+                        }
+                    }
+                } catch (Throwable $t) {
                 }
                 
                 header('Content-Type: application/json');
@@ -2962,6 +3037,10 @@ if (isset($_GET['action']) && $_GET['action'] === 'ocr_search') {
                     $text2 = (string)($row2['ocr_content'] ?? '');
                     $results[] = [
                         'id' => $id2,
+                        'type' => (string)($row2['type'] ?? 'Document'),
+                        'name' => (string)($row2['employee_name'] ?? ''),
+                        'department' => (string)($row2['department'] ?? ''),
+                        'status' => (string)($row2['status'] ?? ''),
                         'matching_pages' => [1],
                         'score' => 0,
                         'confidence' => null,
@@ -3005,12 +3084,128 @@ if (isset($_GET['action']) && $_GET['action'] === 'ocr_search') {
             $remaining = $limit - count($results);
             $like = '%' . $q . '%';
             $stmt2 = $connection->prepare(
-                "SELECT id, ocr_content FROM tracking WHERE (ocr_content LIKE ? OR ocr_summary LIKE ?) ORDER BY id DESC LIMIT ?"
+                "SELECT id, type, employee_name, department, status, ocr_content FROM tracking WHERE (ocr_content LIKE ? OR ocr_summary LIKE ?) ORDER BY id DESC LIMIT ?"
             );
             if ($stmt2) {
                 $stmt2->bind_param('ssi', $like, $like, $remaining);
                 $appendRows($stmt2);
                 $stmt2->close();
+            }
+        }
+
+        if (count($results) < $limit) {
+            $terms = preg_split('/\s+/', trim((string)$q));
+            $terms = array_values(array_filter(array_map(function($term) {
+                $term = preg_replace('/[^\p{L}\p{N}]+/u', '', (string)$term);
+                return mb_strlen($term) >= 2 ? $term : '';
+            }, $terms)));
+
+            if (!empty($terms)) {
+                $remaining = $limit - count($results);
+                $whereParts = [];
+                $types = '';
+                $params = [];
+                foreach ($terms as $term) {
+                    $whereParts[] = "(ocr_content LIKE ? OR ocr_summary LIKE ?)";
+                    $likeTerm = '%' . $term . '%';
+                    $params[] = $likeTerm;
+                    $params[] = $likeTerm;
+                    $types .= 'ss';
+                }
+                $types .= 'i';
+                $params[] = $remaining;
+                $stmt2 = $connection->prepare(
+                    "SELECT id, type, employee_name, department, status, ocr_content FROM tracking WHERE " . implode(' OR ', $whereParts) . " ORDER BY id DESC LIMIT ?"
+                );
+                if ($stmt2) {
+                    $stmt2->bind_param($types, ...$params);
+                    $appendRows($stmt2);
+                    $stmt2->close();
+                }
+            }
+        }
+
+        if (count($results) < $limit && function_exists('file_crypto_decrypt_blob')) {
+            try {
+                $hasExtractedContent = false;
+                if ($chkEc = $connection->query("SHOW TABLES LIKE 'extracted_content'")) {
+                    $hasExtractedContent = ($chkEc->num_rows > 0);
+                    $chkEc->free();
+                }
+                if ($hasExtractedContent) {
+                    $remaining = $limit - count($results);
+                    $stmtEc = $connection->prepare("SELECT doc_ref, title, owner_department, enc_blob FROM extracted_content ORDER BY updated_at DESC LIMIT 300");
+                    if ($stmtEc && $stmtEc->execute()) {
+                        $resEc = $stmtEc->get_result();
+                        while ($resEc && ($ec = $resEc->fetch_assoc()) && count($results) < $limit) {
+                            $docRef = trim((string)($ec['doc_ref'] ?? ''));
+                            if ($docRef === '') continue;
+                            $plain = file_crypto_decrypt_blob($ec['enc_blob'] ?? '');
+                            if ($plain === false || trim((string)$plain) === '') continue;
+                            $plainText = (string)$plain;
+                            $haystack = mb_strtolower($plainText);
+                            $needle = mb_strtolower($q);
+                            $matched = ($needle !== '' && mb_strpos($haystack, $needle) !== false);
+                            if (!$matched && !empty($terms)) {
+                                foreach ($terms as $term) {
+                                    if (mb_strpos($haystack, mb_strtolower($term)) !== false) {
+                                        $matched = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!$matched) continue;
+
+                            $trackingRow = null;
+                            $refId = 0;
+                            if (preg_match('/^(?:tracking:|TRACKING_)?(\d+)$/i', $docRef, $m)) {
+                                $refId = (int)$m[1];
+                                $stmtMap = $connection->prepare("SELECT id, type, employee_name, department, status FROM tracking WHERE id = ? LIMIT 1");
+                                if ($stmtMap) {
+                                    $stmtMap->bind_param('i', $refId);
+                                    if ($stmtMap->execute()) {
+                                        $mapRes = $stmtMap->get_result();
+                                        $trackingRow = $mapRes ? $mapRes->fetch_assoc() : null;
+                                        if ($mapRes) $mapRes->free();
+                                    }
+                                    $stmtMap->close();
+                                }
+                            }
+                            if (!$trackingRow) {
+                                $stmtMap = $connection->prepare("SELECT id, type, employee_name, department, status FROM tracking WHERE doc_hash = ? OR mobile_timestamp = ? ORDER BY id DESC LIMIT 1");
+                                if ($stmtMap) {
+                                    $stmtMap->bind_param('ss', $docRef, $docRef);
+                                    if ($stmtMap->execute()) {
+                                        $mapRes = $stmtMap->get_result();
+                                        $trackingRow = $mapRes ? $mapRes->fetch_assoc() : null;
+                                        if ($mapRes) $mapRes->free();
+                                    }
+                                    $stmtMap->close();
+                                }
+                            }
+                            if (!$trackingRow) continue;
+
+                            $id2 = (int)($trackingRow['id'] ?? 0);
+                            if ($id2 <= 0 || isset($seenIds[(string)$id2])) continue;
+                            $results[] = [
+                                'id' => $id2,
+                                'type' => (string)($trackingRow['type'] ?? ($ec['title'] ?? 'Document')),
+                                'name' => (string)($trackingRow['employee_name'] ?? ''),
+                                'department' => (string)($trackingRow['department'] ?? ($ec['owner_department'] ?? '')),
+                                'status' => (string)($trackingRow['status'] ?? ''),
+                                'matching_pages' => [1],
+                                'score' => 0,
+                                'confidence' => null,
+                                'snippet' => function_exists('ocr_get_match_snippet') ? ocr_get_match_snippet($plainText, $q) : mb_substr($plainText, 0, 180),
+                            ];
+                            $seenIds[(string)$id2] = true;
+                        }
+                        if ($resEc) $resEc->free();
+                    }
+                    if ($stmtEc) $stmtEc->close();
+                }
+            } catch (Throwable $t) {
+                // ignore extracted_content fallback failures
             }
         }
     }
@@ -3673,7 +3868,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             exit();
           }
           $stmt->close();
-          header("Location: tracking.php?status=added");
+          header("Location: tracking.php?status=added" . ($newFirstId ? "&id=" . urlencode((string)$newFirstId) . "&refresh=1" : "&refresh=1"));
           exit();
         } else {
           // Add new document record
@@ -3769,7 +3964,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             }
         }
 
-        header("Location: tracking.php?status=" . (empty($id) ? "added" : "updated"));
+        $redirectStatus = empty($id) ? "added" : "updated";
+        $redirectId = $affected_id ? (string)$affected_id : '';
+        header("Location: tracking.php?status=" . $redirectStatus . ($redirectId !== '' ? "&id=" . urlencode($redirectId) : "") . "&refresh=1");
         exit();
     } else {
         error_log("Error: " . $stmt->error);
@@ -3892,8 +4089,8 @@ if (isset($_GET['route_id']) && isset($_GET['new_holder']) && isset($_GET['new_s
     } else {
         // Regular route update
 
-        // ── Payroll Fixed Routing: HR → CBO → ACCOUNTING ──
-        $payrollFixedRoute = ['HR', 'CBO', 'ACCOUNTING', 'CAO', 'CTO'];
+        // ── Payroll Fixed Routing: HR → CBO → CACCO → CTO ──
+        $payrollFixedRoute = ['HR', 'CBO', 'CACCO', 'CTO'];
         if (stripos($route_doc_type, 'payroll') !== false && $prev_holder) {
           $prevIdx = array_search(strtoupper($prev_holder), $payrollFixedRoute);
           if ($prevIdx !== false && ($prevIdx + 1) < count($payrollFixedRoute)) {
@@ -4731,8 +4928,8 @@ if ($dept !== '' && $dept !== 'All Departments') {
 //      on every routing action, so once a dept routes a doc it stays visible.
 if (!$__isAdmin && !empty($_SESSION['user_department'])) {
   $ud = strtoupper(trim($_SESSION['user_department']));
-  if ($ud === 'ACCOUNT') {
-    $ud = 'ACCOUNTING';
+  if ($ud === 'ACCOUNT' || $ud === 'ACCOUNTING' || $ud === 'CAO') {
+    $ud = 'CACCO';
   }
   $clauses[] = '(UPPER(TRIM(tracking.department)) = ? OR UPPER(TRIM(tracking.current_holder)) = ? OR UPPER(TRIM(tracking.end_location)) = ? OR (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(tracking.routing_queue, \' \', \'\'))) > 0 AND CAST(COALESCE(tracking.route_step, 0) AS UNSIGNED) >= (FIND_IN_SET(UPPER(TRIM(?)), UPPER(REPLACE(tracking.routing_queue, \' \', \'\'))) - 1)))';
   $bindTypes .= 'sssss';
@@ -4750,8 +4947,8 @@ if (!$__isAdmin && !empty($_SESSION['user_department'])) {
   $archDept = $__isAdmin
       ? 'ADMIN'
       : strtoupper(trim($_SESSION['user_department'] ?? $_SESSION['department'] ?? ''));
-  if ($archDept === 'ACCOUNT') {
-    $archDept = 'ACCOUNTING';
+  if ($archDept === 'ACCOUNT' || $archDept === 'ACCOUNTING' || $archDept === 'CAO') {
+    $archDept = 'CACCO';
   }
   if ($__hasDeptArchives && $archDept !== '') {
     $clauses[] = 'NOT EXISTS (SELECT 1 FROM department_archives da WHERE da.tracking_id = tracking.id AND UPPER(TRIM(da.department)) = ?)';
@@ -8197,7 +8394,7 @@ $connection->close();
     let currentSortDirection = 'asc'; // 'asc' or 'desc'
     let filteredDocuments = []; // To store documents after filtering/searching for pagination
     let currentPage = 1;
-    const itemsPerPage = 9999; // Server handles 5-per-page; client won't paginate further
+    const itemsPerPage = (document.getElementById('pageInfo')?.dataset.serverside === '1') ? 200 : 100;
     // View state
     const viewTableBtn = document.getElementById('viewTableBtn');
     const viewListBtn = document.getElementById('viewListBtn');
@@ -8466,7 +8663,7 @@ $connection->close();
 
     function normalizeDepartmentName(value) {
       const v = (value || '').toString().trim().toUpperCase();
-      if (v === 'ACCOUNT') return 'ACCOUNTING';
+      if (v === 'ACCOUNT' || v === 'ACCOUNTING' || v === 'CAO') return 'CACCO';
       return v;
     }
 
@@ -8613,19 +8810,6 @@ $connection->close();
         return;
       }
 
-      // Simulate loading for a brief moment
-      documentTableBody.innerHTML = `
-        <tr><td colspan="7">
-          <div style="padding: 20px; text-align: center;">
-            <div class="skeleton-row" style="width: 90%;"></div>
-            <div class="skeleton-row" style="width: 80%;"></div>
-            <div class="skeleton-row" style="width: 95%;"></div>
-            <div class="skeleton-row" style="width: 70%;"></div>
-          </div>
-        </td></tr>
-      `;
-
-      setTimeout(() => {
         documentTableBody.innerHTML = ''; // Clear skeleton after timeout
         const startIndex = (currentPage - 1) * itemsPerPage;
         const endIndex = startIndex + itemsPerPage;
@@ -8862,7 +9046,6 @@ $connection->close();
         } else {
           showTableView();
         }
-      }, 300); // Simulate network delay
     }
 
     // Toggle grouped department subtable rows
@@ -9328,6 +9511,31 @@ $connection->close();
         infoCurrentHolder.textContent = doc.current_holder || 'N/A';
         infoEndLocation.textContent = doc.end_location || 'N/A';
 
+        const isLocalOnlyDocumentPath = (value) => {
+          const p = (value || '').toString().trim();
+          if (!p) return false;
+          return /^[A-Za-z]:[\\/]/.test(p) ||
+            p.startsWith('file://') ||
+            p.startsWith('/storage/') ||
+            p.startsWith('/data/user/') ||
+            p.startsWith('/var/mobile/') ||
+            p.startsWith('/private/var/mobile/');
+        };
+
+        const showLocalOnlyPreviewWarning = () => {
+          if (!infoDocumentPreviewWrapper || !infoDocumentPreviewFrame) return;
+          infoDocumentPreviewWrapper.style.display = 'block';
+          infoDocumentPreviewFrame.src = '';
+          infoDocumentPreviewFrame.srcdoc = `
+            <div style="font-family:Arial,sans-serif;padding:22px;color:#334155;background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;">
+              <div style="font-weight:700;color:#9a3412;margin-bottom:8px;">Document file is stored locally</div>
+              <div style="font-size:14px;line-height:1.55;">
+                This document points to a desktop/mobile-only file path and cannot be viewed by other users.
+                Re-upload or complete the document so it is saved on the server storage.
+              </div>
+            </div>`;
+        };
+
         if (infoOcrContent) {
           infoOcrContent.value = 'Loading OCR...';
           loadTrackingOcrIntoInfoModal(doc.id, infoOcrContent);
@@ -9366,6 +9574,7 @@ $connection->close();
 
         // Configure View Document button
         infoViewDocumentBtn.style.display = 'inline-flex';
+        infoViewDocumentBtn.innerHTML = '<i class="fas fa-eye"></i>&nbsp;View Document';
         const autoPreview = async () => {
             // Prefer server-generated URL (tracking.php already sets download.php?id=...&inline=1)
             if (doc.file_url) {
@@ -9375,8 +9584,8 @@ $connection->close();
 
             let rawPath = (doc.file_path || '').trim();
 
-            // Ignore Android local paths which are not accessible from the web
-            if (rawPath.startsWith('/data/user/')) {
+            if (isLocalOnlyDocumentPath(rawPath)) {
+                showLocalOnlyPreviewWarning();
                 return;
             }
 
@@ -9414,18 +9623,10 @@ $connection->close();
         // Always use download.php with a cache-busting timestamp so the latest file is served
         const buildFreshMainDocUrl = () => 'download.php?id=' + encodeURIComponent(doc.id) + '&inline=1&t=' + Date.now();
 
-        // Keep the button as a download/open action — fetch live URL then open
+        // Keep the original combined-view layout for full document preview.
         infoViewDocumentBtn.onclick = async () => {
-          try {
-            const r = await fetch('api/document_actions.php?action=get_current_doc&tracking_id=' + encodeURIComponent(doc.id) + '&_=' + Date.now(), { cache: 'no-store', credentials: 'include' });
-            const d = await r.json();
-            const liveUrl = (d && d.success && d.has_file && d.file_url) ? d.file_url : ('download.php?id=' + encodeURIComponent(doc.id) + '&inline=1&t=' + Date.now());
-            loadDocumentAttachments(doc.id, liveUrl, doc.type || 'Main Document');
-            window.open(liveUrl, '_blank');
-          } catch (_) {
-            const fallback = 'download.php?id=' + encodeURIComponent(doc.id) + '&inline=1&t=' + Date.now();
-            window.open(fallback, '_blank');
-          }
+          const combinedUrl = 'merge_documents.php?tracking_id=' + encodeURIComponent(doc.id) + '&view=1&t=' + Date.now();
+          window.open(combinedUrl, '_blank');
         };
 
         // Load comments
@@ -10549,7 +10750,17 @@ $connection->close();
                     const data = await r.json();
                     if (data && data.success) {
                         showToast('Document marked as received (In Review)', 'success');
-                        setTimeout(() => location.reload(), 800);
+                        if (typeof refreshTrackingRow === 'function') {
+                          await refreshTrackingRow(docId, {
+                            status: data.new_status || data.verified_status || 'In Review',
+                            current_holder: data.current_holder || ''
+                          });
+                        }
+                        if (typeof reloadTrackingAfterAction === 'function') {
+                          reloadTrackingAfterAction(800);
+                        } else {
+                          setTimeout(() => location.reload(), 800);
+                        }
                     } else {
                         showToast(data.error || 'Failed to mark as received', 'error');
                     }
@@ -10562,39 +10773,108 @@ $connection->close();
 
     // Open camera/file capture for final document update
     function openFinalDocumentCapture(docId, docType) {
-        // Create a file input for capturing/uploading the final document
         const fileInput = document.createElement('input');
         fileInput.type = 'file';
         fileInput.accept = 'image/*,.pdf';
-        fileInput.capture = 'environment'; // Use camera on mobile devices
+        fileInput.capture = 'environment';
         
         fileInput.onchange = async (e) => {
             const file = e.target.files[0];
             if (!file) return;
-            
-            showToast('Uploading final document...', 'info');
-            
-            const formData = new FormData();
-            formData.append('action', 'update_final_document');
-            formData.append('doc_id', docId);
-            formData.append('file', file);
-            
-            try {
-                const response = await fetch('tracking.php', {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                const result = await response.json();
-                if (result.success) {
-                    showToast('Final document captured successfully!', 'success');
-                    setTimeout(() => location.reload(), 1500);
-                } else {
-                    showToast(result.error || 'Failed to upload document', 'error');
+
+            const fileSize = file.size >= 1024 * 1024
+              ? (file.size / (1024 * 1024)).toFixed(2) + ' MB'
+              : Math.max(1, Math.round(file.size / 1024)) + ' KB';
+
+            const modal = document.createElement('div');
+            modal.id = 'finalDocumentReviewModal';
+            modal.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,0.55);z-index:10080;display:flex;align-items:center;justify-content:center;padding:16px;';
+            const previewUrl = URL.createObjectURL(file);
+            const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+            modal.innerHTML = `
+              <div style="width:min(760px,96vw);max-height:92vh;background:#fff;border-radius:18px;box-shadow:0 24px 70px rgba(15,23,42,0.30);overflow:hidden;display:flex;flex-direction:column;">
+                <div style="padding:18px 22px;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;gap:12px;">
+                  <div style="width:38px;height:38px;border-radius:12px;background:#ecfdf5;color:#047857;display:flex;align-items:center;justify-content:center;"><i class="fas fa-file-circle-check"></i></div>
+                  <div style="min-width:0;flex:1;">
+                    <div style="font-size:17px;font-weight:800;color:#0f172a;">Review Final Document</div>
+                    <div style="font-size:12px;color:#64748b;">Step 1 Select file → Step 2 Review → Step 3 Complete</div>
+                  </div>
+                  <button type="button" id="finalReviewCloseBtn" style="border:none;background:#f8fafc;color:#64748b;border-radius:10px;width:34px;height:34px;cursor:pointer;">✕</button>
+                </div>
+                <div style="padding:18px 22px;overflow:auto;">
+                  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:14px;">
+                    <div style="border:1px solid #e2e8f0;border-radius:12px;padding:12px;background:#f8fafc;">
+                      <div style="font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700;">Document</div>
+                      <div style="font-weight:700;color:#0f172a;margin-top:4px;">${String(docType || 'Document')}</div>
+                    </div>
+                    <div style="border:1px solid #e2e8f0;border-radius:12px;padding:12px;background:#f8fafc;">
+                      <div style="font-size:11px;color:#64748b;text-transform:uppercase;font-weight:700;">Selected File</div>
+                      <div style="font-weight:700;color:#0f172a;margin-top:4px;word-break:break-word;">${file.name}</div>
+                      <div style="font-size:12px;color:#64748b;margin-top:2px;">${fileSize}</div>
+                    </div>
+                  </div>
+                  <div style="border:1px solid #cbd5e1;border-radius:14px;overflow:hidden;background:#f8fafc;">
+                    <div style="padding:10px 12px;border-bottom:1px solid #e2e8f0;font-size:13px;font-weight:700;color:#334155;">Preview before completing</div>
+                    ${isPdf
+                      ? `<iframe src="${previewUrl}" style="width:100%;height:420px;border:0;background:#fff;"></iframe>`
+                      : `<div style="max-height:420px;overflow:auto;text-align:center;background:#0f172a;"><img src="${previewUrl}" alt="Final document preview" style="max-width:100%;height:auto;display:inline-block;background:#fff;"></div>`}
+                  </div>
+                  <div style="margin-top:12px;padding:12px;border:1px solid #bfdbfe;background:#eff6ff;border-radius:12px;color:#1e40af;font-size:13px;line-height:1.5;">
+                    Make sure the file is clear and complete. Pressing <strong>Complete Document</strong> will save this file to server storage and mark the tracking status as Completed.
+                  </div>
+                </div>
+                <div style="padding:14px 22px;border-top:1px solid #e2e8f0;display:flex;justify-content:flex-end;gap:10px;background:#fff;">
+                  <button type="button" id="finalReviewRetakeBtn" style="padding:10px 16px;border:1px solid #cbd5e1;background:#fff;color:#475569;border-radius:10px;font-weight:700;cursor:pointer;">Choose Another File</button>
+                  <button type="button" id="finalReviewCompleteBtn" style="padding:10px 18px;border:none;background:#0f766e;color:#fff;border-radius:10px;font-weight:800;cursor:pointer;"><i class="fas fa-check-circle"></i> Complete Document</button>
+                </div>
+              </div>`;
+
+            const closeModal = () => {
+              URL.revokeObjectURL(previewUrl);
+              if (modal.parentNode) modal.parentNode.removeChild(modal);
+            };
+
+            modal.querySelector('#finalReviewCloseBtn')?.addEventListener('click', closeModal);
+            modal.querySelector('#finalReviewRetakeBtn')?.addEventListener('click', () => {
+              closeModal();
+              openFinalDocumentCapture(docId, docType);
+            });
+            modal.querySelector('#finalReviewCompleteBtn')?.addEventListener('click', async () => {
+              const completeBtn = modal.querySelector('#finalReviewCompleteBtn');
+              completeBtn.disabled = true;
+              completeBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Uploading...';
+
+              const formData = new FormData();
+              formData.append('action', 'update_final_document');
+              formData.append('doc_id', docId);
+              formData.append('file', file);
+
+              try {
+                  const response = await fetch('tracking.php', {
+                      method: 'POST',
+                      body: formData
+                  });
+
+                  const result = await response.json();
+                  if (result.success) {
+                      closeModal();
+                      showToast('Final document saved and marked Completed.', 'success');
+                      if (typeof reloadTrackingAfterAction === 'function') {
+                        reloadTrackingAfterAction(700);
+                      }
+                  } else {
+                      completeBtn.disabled = false;
+                      completeBtn.innerHTML = '<i class="fas fa-check-circle"></i> Complete Document';
+                      showToast(result.error || 'Failed to upload document', 'error');
+                  }
+              } catch (error) {
+                  completeBtn.disabled = false;
+                  completeBtn.innerHTML = '<i class="fas fa-check-circle"></i> Complete Document';
+                  showToast('Error uploading document: ' + error.message, 'error');
                 }
-            } catch (error) {
-                showToast('Error uploading document: ' + error.message, 'error');
-            }
+            });
+
+            document.body.appendChild(modal);
         };
         
         fileInput.click();
@@ -11437,8 +11717,79 @@ $connection->close();
       // Auto-refresh tracking data as a fallback when Firestore realtime is blocked
       // Uses ETag conditional requests to skip redundant payloads (304 Not Modified)
       window.__trackingEtag = null;
+      window.__trackingRefreshInFlight = false;
+      window.__trackingRenderQueued = false;
+      window.__trackingLastRenderAt = 0;
+      window.__trackingActionReloadQueued = false;
+
+      function reloadTrackingAfterAction(delay = 700) {
+        if (window.__trackingActionReloadQueued) return;
+        window.__trackingActionReloadQueued = true;
+        setTimeout(() => window.location.reload(), delay);
+      }
+
+      function mergeTrackingDocuments(list, options = {}) {
+        const docs = (typeof documents !== 'undefined' && Array.isArray(documents)) ? documents : window.trackingDocuments;
+        if (!Array.isArray(docs) || !Array.isArray(list)) return false;
+        const visibleOnly = !!options.visibleOnly;
+        let changed = false;
+        list.forEach(item => {
+          if (!item || item.id === undefined || item.id === null) return;
+          const id = String(item.id);
+          const idx = docs.findIndex(d => String(d && d.id) === id);
+          if (idx >= 0) {
+            docs[idx] = { ...docs[idx], ...item };
+            changed = true;
+          } else if (!visibleOnly) {
+            docs.push(item);
+            changed = true;
+          }
+        });
+        if (changed) {
+          window.trackingDocuments = docs;
+          window.documents = docs;
+          scheduleTrackingRender();
+        }
+        return changed;
+      }
+
+      async function refreshTrackingRow(docId, fallback = null) {
+        const id = String(docId || '').trim();
+        if (!id) return false;
+        try {
+          const detail = await fetchDocDetail(id);
+          if (detail) {
+            return mergeTrackingDocuments([detail], { visibleOnly: false });
+          }
+        } catch (_) {}
+        if (fallback) {
+          return mergeTrackingDocuments([{ id, ...fallback }], { visibleOnly: false });
+        }
+        return false;
+      }
+
+      window.mergeTrackingDocuments = mergeTrackingDocuments;
+      window.refreshTrackingRow = refreshTrackingRow;
+
+      function scheduleTrackingRender() {
+        if (typeof window.applyFiltersAndSearch !== 'function') return;
+        if (window.__trackingRenderQueued) return;
+        window.__trackingRenderQueued = true;
+        requestAnimationFrame(() => {
+          window.__trackingRenderQueued = false;
+          const now = Date.now();
+          if ((now - (window.__trackingLastRenderAt || 0)) < 400) {
+            setTimeout(scheduleTrackingRender, 400);
+            return;
+          }
+          window.__trackingLastRenderAt = now;
+          window.applyFiltersAndSearch();
+        });
+      }
+
       async function loadTrackingFromServer() {
-        if (isServerSideMode) return;
+        if (window.__trackingRefreshInFlight) return;
+        window.__trackingRefreshInFlight = true;
         try {
           const url = `tracking.php?action=tracking_latest&limit=200`;
           const headers = {};
@@ -11470,9 +11821,12 @@ $connection->close();
           }
           window.__trackingSig = newSig;
 
-          docs.splice(0, docs.length, ...list);
-          window.trackingDocuments = docs;
-          window.documents = docs;
+          if (isServerSideMode) {
+            mergeTrackingDocuments(list, { visibleOnly: true });
+            return;
+          }
+
+          mergeTrackingDocuments(list, { visibleOnly: false });
 
           // Update sync indicator (throttled)
           try {
@@ -11488,10 +11842,9 @@ $connection->close();
             }
           } catch (_) {}
 
-          if (typeof window.applyFiltersAndSearch === 'function') {
-            requestAnimationFrame(() => window.applyFiltersAndSearch());
-          }
         } catch (_) {
+        } finally {
+          window.__trackingRefreshInFlight = false;
         }
       }
 
@@ -11561,16 +11914,14 @@ $connection->close();
 
         if (changed) {
           try {
-            requestAnimationFrame(() => window.applyFiltersAndSearch());
+            scheduleTrackingRender();
           } catch (_) {}
         }
       }
 
-      // Run once immediately, then every 10 seconds (paused when tab hidden)
-      if (!isServerSideMode) {
-        loadTrackingFromServer();
-        setInterval(() => { if (!document.hidden) loadTrackingFromServer(); }, 10000);
-      }
+      // Run once immediately, then every 5 seconds (paused when tab hidden)
+      loadTrackingFromServer();
+      setInterval(() => { if (!document.hidden) loadTrackingFromServer(); }, 5000);
 
       // Recompute time-in-dept once a minute (paused when tab hidden)
       refreshTimeInDeptEveryMinute();
@@ -11585,9 +11936,7 @@ $connection->close();
       // Resume data refresh immediately when tab becomes visible
       document.addEventListener('visibilitychange', () => {
         if (!document.hidden) {
-          if (!isServerSideMode) {
-            loadTrackingFromServer();
-          }
+          loadTrackingFromServer();
           loadNotificationsFromServer();
         }
       });
@@ -11813,17 +12162,25 @@ $connection->close();
       const base = window.location.pathname.replace(/\/[^\/]*$/, '');
       return base + '/api/route_document.php';
     })();
-    const PAYROLL_FIXED_ROUTE = ['HR','CBO','ACCOUNTING','CAO','CTO'];
+    const PAYROLL_FIXED_ROUTE = ['HR','CBO','CACCO','CTO'];
     const ALL_DEPARTMENTS = <?php
       $deptList = [];
+      $canonicalDeptForRoute = function ($dept) {
+        $dept = strtoupper(trim((string)$dept));
+        if ($dept === 'ACCOUNT' || $dept === 'ACCOUNTING' || $dept === 'CAO') {
+          return 'CACCO';
+        }
+        return $dept;
+      };
       try {
         $dRes = $connection->query("SELECT DISTINCT department FROM control WHERE department IS NOT NULL AND department != '' ORDER BY department ASC");
         while ($dRes && ($dRow = $dRes->fetch_assoc())) {
-          $d = strtoupper(trim($dRow['department']));
+          $d = $canonicalDeptForRoute($dRow['department']);
           if ($d !== '') $deptList[] = $d;
         }
         if ($dRes) $dRes->free();
       } catch (Throwable $t) {}
+      $deptList = array_values(array_unique(array_filter(array_map($canonicalDeptForRoute, $deptList))));
       if (empty($deptList)) $deptList = ['CPDO','GSO','CBO','CTO','CACCO','CADO','CMO','HR'];
       echo json_encode($deptList);
     ?>;
@@ -11939,6 +12296,15 @@ $connection->close();
             row.setAttribute('data-status', data.new_status || 'In Review');
           }
           showToast('Document marked as Received successfully.', 'success');
+          if (typeof refreshTrackingRow === 'function') {
+            await refreshTrackingRow(docId, {
+              status: data.new_status || data.verified_status || 'In Review',
+              current_holder: data.current_holder || ''
+            });
+          }
+          if (typeof reloadTrackingAfterAction === 'function') {
+            reloadTrackingAfterAction(700);
+          }
 
           try {
             const latest = await fetchDocDetail(docId);
@@ -12150,9 +12516,18 @@ $connection->close();
         }
 
         if (data.success || data.track_id || data.tracking_id) {
+          const updatedId = data.tracking_id || data.track_id || docId;
           document.getElementById('routeDocumentModal')?.remove();
+          if (typeof refreshTrackingRow === 'function') {
+            await refreshTrackingRow(updatedId, {
+              status: 'Pending',
+              current_holder: nextDept
+            });
+          }
           await showRouteSuccessModal(nextDept);
-          if (typeof window.applyFiltersAndSearch === 'function') window.applyFiltersAndSearch();
+          if (typeof reloadTrackingAfterAction === 'function') {
+            reloadTrackingAfterAction(700);
+          }
         } else {
           showToast((data.message || data.error || 'Routing failed'), 'error');
           if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane"></i> Route'; }
