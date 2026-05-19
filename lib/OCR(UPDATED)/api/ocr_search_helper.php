@@ -253,6 +253,23 @@ function ocr_get_pages(mysqli $conn, string $scope, int $docId): array {
     return $pages;
 }
 
+function ocr_table_has_column(mysqli $conn, string $table, string $column): bool {
+    static $cache = [];
+    $key = $table . '.' . $column;
+    if (array_key_exists($key, $cache)) {
+        return $cache[$key];
+    }
+
+    $safeTable = preg_replace('/[^a-zA-Z0-9_]/', '', $table);
+    $safeColumn = $conn->real_escape_string($column);
+    $res = @$conn->query("SHOW COLUMNS FROM `$safeTable` LIKE '$safeColumn'");
+    $cache[$key] = ($res && $res->num_rows > 0);
+    if ($res) {
+        $res->free();
+    }
+    return $cache[$key];
+}
+
 /**
  * Smart search across documents using OCR content
  * Returns documents with relevance scores and matching page info
@@ -272,6 +289,10 @@ function ocr_smart_search(mysqli $conn, string $scope, string $query, int $limit
     
     $table = $scope === 'archive' ? 'archive' : 'tracking';
     $nameCol = $scope === 'archive' ? 'document_name' : 'employee_name';
+    $hasSummary = ocr_table_has_column($conn, $table, 'ocr_summary');
+    $hasTotalPages = ocr_table_has_column($conn, $table, 'total_pages');
+    $summarySelect = $hasSummary ? "d.ocr_summary" : "NULL AS ocr_summary";
+    $totalPagesSelect = $hasTotalPages ? "d.total_pages" : "1 AS total_pages";
     
     // Build search conditions
     $likeTerms = array_map(fn($t) => '%' . $conn->real_escape_string($t) . '%', $terms);
@@ -286,8 +307,8 @@ function ocr_smart_search(mysqli $conn, string $scope, string $query, int $limit
             d.$nameCol as name,
             d.department,
             d.status,
-            d.ocr_summary,
-            d.total_pages,
+            $summarySelect,
+            $totalPagesSelect,
             (
                 SELECT GROUP_CONCAT(DISTINCT op.page_number ORDER BY op.page_number)
                 FROM ocr_pages op 
@@ -311,32 +332,39 @@ function ocr_smart_search(mysqli $conn, string $scope, string $query, int $limit
         LIMIT ?
     ";
     
-    $stmt = $conn->prepare($sql);
-    if ($stmt) {
-        $stmt->bind_param('ssssssssi', 
-            $scope, $ftQuery, $ftQuery, 
-            $ftQuery, $scope, 
-            $scope, $ftQuery, $ftQuery, 
-            $limit
-        );
-        
-        if ($stmt->execute()) {
-            $res = $stmt->get_result();
-            while ($row = $res->fetch_assoc()) {
-                $results[] = [
-                    'id' => (int)$row['id'],
-                    'type' => $row['type'],
-                    'name' => $row['name'],
-                    'department' => $row['department'],
-                    'status' => $row['status'],
-                    'total_pages' => (int)($row['total_pages'] ?? 1),
-                    'matching_pages' => $row['matching_pages'] ? explode(',', $row['matching_pages']) : [],
-                    'relevance' => (float)($row['relevance_score'] ?? 0),
-                    'summary_snippet' => substr($row['ocr_summary'] ?? '', 0, 150),
-                ];
+    try {
+        $stmt = $conn->prepare($sql);
+        if ($stmt) {
+            $stmt->bind_param('ssssssssi', 
+                $scope, $ftQuery, $ftQuery, 
+                $ftQuery, $scope, 
+                $scope, $ftQuery, $ftQuery, 
+                $limit
+            );
+            
+            if ($stmt->execute()) {
+                $res = $stmt->get_result();
+                while ($row = $res->fetch_assoc()) {
+                    $results[] = [
+                        'id' => (int)$row['id'],
+                        'type' => $row['type'] ?? 'Document',
+                        'name' => $row['name'] ?? '',
+                        'department' => $row['department'] ?? '',
+                        'status' => $row['status'] ?? '',
+                        'total_pages' => (int)($row['total_pages'] ?? 1),
+                        'matching_pages' => $row['matching_pages'] ? explode(',', $row['matching_pages']) : [],
+                        'relevance' => (float)($row['relevance_score'] ?? 0),
+                        'summary_snippet' => substr($row['ocr_summary'] ?? '', 0, 150),
+                    ];
+                }
             }
+            $stmt->close();
+        } else {
+            error_log('ocr_smart_search prepare failed: ' . $conn->error);
         }
-        $stmt->close();
+    } catch (Throwable $t) {
+        error_log('ocr_smart_search failed: ' . $t->getMessage());
+        $results = [];
     }
     
     // Fallback: LIKE search if FULLTEXT returns nothing (for short queries)
@@ -354,6 +382,10 @@ function ocr_like_search(mysqli $conn, string $scope, array $terms, int $limit):
     $results = [];
     $table = $scope === 'archive' ? 'archive' : 'tracking';
     $nameCol = $scope === 'archive' ? 'document_name' : 'employee_name';
+    $hasSummary = ocr_table_has_column($conn, $table, 'ocr_summary');
+    $hasTotalPages = ocr_table_has_column($conn, $table, 'total_pages');
+    $summarySelect = $hasSummary ? "d.ocr_summary" : "NULL AS ocr_summary";
+    $totalPagesSelect = $hasTotalPages ? "d.total_pages" : "1 AS total_pages";
     
     // Build OR conditions for each term
     $conditions = [];
@@ -377,8 +409,8 @@ function ocr_like_search(mysqli $conn, string $scope, array $terms, int $limit):
             d.$nameCol as name,
             d.department,
             d.status,
-            d.ocr_summary,
-            d.total_pages,
+            $summarySelect,
+            $totalPagesSelect,
             (SELECT GROUP_CONCAT(DISTINCT op2.page_number ORDER BY op2.page_number)
              FROM ocr_pages op2 
              WHERE op2.scope = ? AND op2.doc_id = d.id 
@@ -390,36 +422,42 @@ function ocr_like_search(mysqli $conn, string $scope, array $terms, int $limit):
         LIMIT ?
     ";
     
-    $stmt = $conn->prepare($sql);
-    if ($stmt) {
-        // Build parameter array: scope for subquery, params, scope for join, params again, limit
-        $bindParams = [$scope];
-        $bindParams = array_merge($bindParams, $params);
-        $bindParams[] = $scope;
-        $bindParams = array_merge($bindParams, $params);
-        $bindParams[] = $limit;
-        
-        $bindTypes = 's' . $types . 's' . $types . 'i';
-        
-        $stmt->bind_param($bindTypes, ...$bindParams);
-        
-        if ($stmt->execute()) {
-            $res = $stmt->get_result();
-            while ($row = $res->fetch_assoc()) {
-                $results[] = [
-                    'id' => (int)$row['id'],
-                    'type' => $row['type'],
-                    'name' => $row['name'],
-                    'department' => $row['department'],
-                    'status' => $row['status'],
-                    'total_pages' => (int)($row['total_pages'] ?? 1),
-                    'matching_pages' => $row['matching_pages'] ? explode(',', $row['matching_pages']) : [],
-                    'relevance' => 1.0,
-                    'summary_snippet' => substr($row['ocr_summary'] ?? '', 0, 150),
-                ];
+    try {
+        $stmt = $conn->prepare($sql);
+        if ($stmt) {
+            // Build parameter array: scope for subquery, params, scope for join, params again, limit
+            $bindParams = [$scope];
+            $bindParams = array_merge($bindParams, $params);
+            $bindParams[] = $scope;
+            $bindParams = array_merge($bindParams, $params);
+            $bindParams[] = $limit;
+            
+            $bindTypes = 's' . $types . 's' . $types . 'i';
+            
+            $stmt->bind_param($bindTypes, ...$bindParams);
+            
+            if ($stmt->execute()) {
+                $res = $stmt->get_result();
+                while ($row = $res->fetch_assoc()) {
+                    $results[] = [
+                        'id' => (int)$row['id'],
+                        'type' => $row['type'] ?? 'Document',
+                        'name' => $row['name'] ?? '',
+                        'department' => $row['department'] ?? '',
+                        'status' => $row['status'] ?? '',
+                        'total_pages' => (int)($row['total_pages'] ?? 1),
+                        'matching_pages' => $row['matching_pages'] ? explode(',', $row['matching_pages']) : [],
+                        'relevance' => 1.0,
+                        'summary_snippet' => substr($row['ocr_summary'] ?? '', 0, 150),
+                    ];
+                }
             }
+            $stmt->close();
+        } else {
+            error_log('ocr_like_search prepare failed: ' . $conn->error);
         }
-        $stmt->close();
+    } catch (Throwable $t) {
+        error_log('ocr_like_search failed: ' . $t->getMessage());
     }
     
     return $results;

@@ -5064,7 +5064,9 @@ class _DashboardPageState extends State<DashboardPage>
         if (up.isEmpty) return '';
         if (up.contains('ACCOUNTING') ||
             up.contains('CACCO') ||
-            up.contains('CAO')) return 'CACCO';
+            up.contains('CAO')) {
+          return 'CACCO';
+        }
         if (up == 'HR' || up.contains('HUMAN RESOURCE')) return 'HR';
         if (up.contains('CBO')) return 'CBO';
         if (up.contains('CTO')) return 'CTO';

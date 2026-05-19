@@ -3019,6 +3019,7 @@ if (isset($_GET['action']) && $_GET['action'] === 'ocr_search') {
     foreach ($results as $r0) {
         $seenIds[(string)($r0['id'] ?? '')] = true;
     }
+    $hasTrackingOcrSummary = function_exists('ocr_table_has_column') && ocr_table_has_column($connection, 'tracking', 'ocr_summary');
     if (count($results) < $limit) {
         $appendRows = function($stmt) use (&$results, &$seenIds, $limit, $q) {
             if (!$stmt) {
@@ -3057,13 +3058,13 @@ if (isset($_GET['action']) && $_GET['action'] === 'ocr_search') {
         $usedFulltext = false;
         $remaining = $limit - count($results);
         $useFulltext = (mb_strlen($q) >= 3);
-        if ($useFulltext && $remaining > 0) {
+        if ($useFulltext && $hasTrackingOcrSummary && $remaining > 0) {
             $ftBase = trim(preg_replace('/[^a-zA-Z0-9\s]+/', ' ', $q));
             $ftBase = preg_replace('/\s+/', ' ', $ftBase);
             if ($ftBase !== '') {
                 $ftQuery = '+' . str_replace(' ', ' +', $ftBase) . '*';
                 $stmt2 = $connection->prepare(
-                    "SELECT id, ocr_content, MATCH(ocr_content, ocr_summary) AGAINST(? IN BOOLEAN MODE) AS ft_score " .
+                    "SELECT id, type, employee_name, department, status, ocr_content, MATCH(ocr_content, ocr_summary) AGAINST(? IN BOOLEAN MODE) AS ft_score " .
                     "FROM tracking WHERE MATCH(ocr_content, ocr_summary) AGAINST(? IN BOOLEAN MODE) " .
                     "ORDER BY ft_score DESC, id DESC LIMIT ?"
                 );
@@ -3083,11 +3084,16 @@ if (isset($_GET['action']) && $_GET['action'] === 'ocr_search') {
         if (!$usedFulltext && count($results) < $limit) {
             $remaining = $limit - count($results);
             $like = '%' . $q . '%';
-            $stmt2 = $connection->prepare(
-                "SELECT id, type, employee_name, department, status, ocr_content FROM tracking WHERE (ocr_content LIKE ? OR ocr_summary LIKE ?) ORDER BY id DESC LIMIT ?"
-            );
+            $likeSql = $hasTrackingOcrSummary
+                ? "SELECT id, type, employee_name, department, status, ocr_content FROM tracking WHERE (ocr_content LIKE ? OR ocr_summary LIKE ?) ORDER BY id DESC LIMIT ?"
+                : "SELECT id, type, employee_name, department, status, ocr_content FROM tracking WHERE ocr_content LIKE ? ORDER BY id DESC LIMIT ?";
+            $stmt2 = $connection->prepare($likeSql);
             if ($stmt2) {
-                $stmt2->bind_param('ssi', $like, $like, $remaining);
+                if ($hasTrackingOcrSummary) {
+                    $stmt2->bind_param('ssi', $like, $like, $remaining);
+                } else {
+                    $stmt2->bind_param('si', $like, $remaining);
+                }
                 $appendRows($stmt2);
                 $stmt2->close();
             }
@@ -3106,11 +3112,17 @@ if (isset($_GET['action']) && $_GET['action'] === 'ocr_search') {
                 $types = '';
                 $params = [];
                 foreach ($terms as $term) {
-                    $whereParts[] = "(ocr_content LIKE ? OR ocr_summary LIKE ?)";
                     $likeTerm = '%' . $term . '%';
-                    $params[] = $likeTerm;
-                    $params[] = $likeTerm;
-                    $types .= 'ss';
+                    if ($hasTrackingOcrSummary) {
+                        $whereParts[] = "(ocr_content LIKE ? OR ocr_summary LIKE ?)";
+                        $params[] = $likeTerm;
+                        $params[] = $likeTerm;
+                        $types .= 'ss';
+                    } else {
+                        $whereParts[] = "ocr_content LIKE ?";
+                        $params[] = $likeTerm;
+                        $types .= 's';
+                    }
                 }
                 $types .= 'i';
                 $params[] = $remaining;

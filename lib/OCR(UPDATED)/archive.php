@@ -668,7 +668,91 @@ if (isset($_GET['action']) && $_GET['action'] === 'ocr_search') {
         ]);
     }
     
-    $results = ocr_smart_search($connection, 'archive', $q, $limit);
+    try {
+        $results = ocr_smart_search($connection, 'archive', $q, $limit);
+    } catch (Throwable $t) {
+        error_log('archive OCR search failed: ' . $t->getMessage());
+        $results = [];
+    }
+    
+    $seenIds = [];
+    foreach ($results as $r0) {
+        $seenIds[(string)($r0['id'] ?? '')] = true;
+    }
+    
+    if (count($results) < $limit && function_exists('ocr_table_has_column')) {
+        $ocrColumns = [];
+        if (ocr_table_has_column($connection, 'archive', 'ocr_content')) {
+            $ocrColumns[] = 'ocr_content';
+        }
+        if (ocr_table_has_column($connection, 'archive', 'original_ocr_content')) {
+            $ocrColumns[] = 'original_ocr_content';
+        }
+        if (ocr_table_has_column($connection, 'archive', 'ocr_summary')) {
+            $ocrColumns[] = 'ocr_summary';
+        }
+        
+        if (!empty($ocrColumns)) {
+            $remaining = $limit - count($results);
+            $whereParts = [];
+            $selectParts = [];
+            $params = [];
+            $types = '';
+            $like = '%' . $q . '%';
+            foreach ($ocrColumns as $col) {
+                $whereParts[] = "`$col` LIKE ?";
+                $selectParts[] = "`$col`";
+                $params[] = $like;
+                $types .= 's';
+            }
+            $types .= 'i';
+            $params[] = $remaining;
+            $sql = "SELECT id, type, document_name, department, status, " . implode(', ', $selectParts) . " FROM archive WHERE " . implode(' OR ', $whereParts) . " ORDER BY id DESC LIMIT ?";
+            $stmtLegacy = $connection->prepare($sql);
+            if ($stmtLegacy) {
+                try {
+                    $stmtLegacy->bind_param($types, ...$params);
+                    if ($stmtLegacy->execute()) {
+                        $resLegacy = $stmtLegacy->get_result();
+                        while ($rowLegacy = $resLegacy->fetch_assoc()) {
+                            $idLegacy = (int)($rowLegacy['id'] ?? 0);
+                            if ($idLegacy <= 0 || isset($seenIds[(string)$idLegacy])) {
+                                continue;
+                            }
+                            $textLegacy = '';
+                            foreach ($ocrColumns as $col) {
+                                $candidate = trim((string)($rowLegacy[$col] ?? ''));
+                                if ($candidate !== '') {
+                                    $textLegacy = $candidate;
+                                    break;
+                                }
+                            }
+                            $results[] = [
+                                'id' => $idLegacy,
+                                'type' => (string)($rowLegacy['type'] ?? 'Document'),
+                                'name' => (string)($rowLegacy['document_name'] ?? ''),
+                                'department' => (string)($rowLegacy['department'] ?? ''),
+                                'status' => (string)($rowLegacy['status'] ?? ''),
+                                'matching_pages' => [1],
+                                'relevance' => 1.0,
+                                'snippet' => function_exists('ocr_get_match_snippet') ? ocr_get_match_snippet($textLegacy, $q) : null,
+                            ];
+                            $seenIds[(string)$idLegacy] = true;
+                            if (count($results) >= $limit) {
+                                break;
+                            }
+                        }
+                        if ($resLegacy) {
+                            $resLegacy->free();
+                        }
+                    }
+                } catch (Throwable $t) {
+                    error_log('archive OCR legacy fallback failed: ' . $t->getMessage());
+                }
+                $stmtLegacy->close();
+            }
+        }
+    }
     
     // Enrich with snippets
     foreach ($results as &$result) {
