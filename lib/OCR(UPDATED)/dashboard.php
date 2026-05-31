@@ -1361,7 +1361,15 @@ $connection->close();
       <div class="top-bar">
         <h2>Main Dashboard</h2>
         <div class="top-bar-actions" style="display: flex; align-items: center;">
-          <?php include __DIR__ . '/partials/notifications.php'; ?>
+            <?php
+            $notificationsWidget = __DIR__ . '/partials/notifications.php';
+            if (!is_file($notificationsWidget)) {
+              $notificationsWidget = __DIR__ . '/notifications.php';
+            }
+            if (is_file($notificationsWidget)) {
+              include $notificationsWidget;
+            }
+            ?>
           <div class="user-profile" id="userProfile">
             <?php 
             $userInfo = getUserDisplayInfo();

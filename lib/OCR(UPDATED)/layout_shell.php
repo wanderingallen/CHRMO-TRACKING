@@ -142,7 +142,15 @@ if (isset($_GET['contentOnly']) && $_GET['contentOnly'] == '1') {
       <div class="top-bar">
         <h2><?php echo ucfirst($page); ?></h2>
         <div class="top-bar-actions" style="display:flex;align-items:center;gap:10px;">
-          <?php include __DIR__ . '/partials/notifications.php'; ?>
+            <?php
+            $notificationsWidget = __DIR__ . '/partials/notifications.php';
+            if (!is_file($notificationsWidget)) {
+              $notificationsWidget = __DIR__ . '/notifications.php';
+            }
+            if (is_file($notificationsWidget)) {
+              include $notificationsWidget;
+            }
+            ?>
         </div>
       </div>
 

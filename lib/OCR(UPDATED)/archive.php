@@ -2353,7 +2353,15 @@ require_once 'user_profile_widget.php';
           <div id="ocrSearchResults" class="ocr-search-results" style="display:none;"></div>
         </div>
         <div style="display: flex; align-items: center;">
-          <?php include __DIR__ . '/partials/notifications.php'; ?>
+            <?php
+            $notificationsWidget = __DIR__ . '/partials/notifications.php';
+            if (!is_file($notificationsWidget)) {
+              $notificationsWidget = __DIR__ . '/notifications.php';
+            }
+            if (is_file($notificationsWidget)) {
+              include $notificationsWidget;
+            }
+            ?>
           <div class="user-profile" id="userProfile">
             <?php 
             $userInfo = getUserDisplayInfo();
